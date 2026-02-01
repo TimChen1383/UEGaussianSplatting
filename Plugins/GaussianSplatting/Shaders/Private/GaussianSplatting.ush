@@ -1,0 +1,100 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+#include "/Engine/Private/Common.ush"
+#include "/Plugin/GaussianSplatting/Private/GaussianDataTypes.ush"
+#include "/Plugin/GaussianSplatting/Private/SphericalHarmonics.ush"
+
+// Common parameters for Gaussian Splatting shaders
+// These should be bound by the render pass
+
+// Static data buffers
+// ByteAddressBuffer PositionBuffer;
+// ByteAddressBuffer OtherDataBuffer;
+// ByteAddressBuffer SHBuffer;
+// StructuredBuffer<FGaussianChunkInfo> ChunkBuffer;
+// Texture2D ColorTexture;
+// SamplerState ColorSampler;
+
+// Dynamic data buffer
+// RWStructuredBuffer<FGaussianSplatViewData> ViewDataBuffer;
+
+// Load position from buffer (Float32 format)
+float3 LoadPositionFloat32(ByteAddressBuffer buffer, uint splatIndex)
+{
+	uint offset = splatIndex * 12; // 3 floats * 4 bytes
+	return asfloat(buffer.Load3(offset));
+}
+
+// Load position from buffer with chunk dequantization (Norm16 format)
+float3 LoadPositionNorm16(ByteAddressBuffer buffer, StructuredBuffer<FGaussianChunkInfo> chunks, uint splatIndex)
+{
+	uint chunkIndex = splatIndex / SPLATS_PER_CHUNK;
+	FGaussianChunkInfo chunk = chunks[chunkIndex];
+
+	uint offset = splatIndex * 6; // 3 shorts * 2 bytes
+	uint2 data = buffer.Load2(offset);
+
+	float3 norm;
+	norm.x = (data.x & 0xFFFF) / 65535.0;
+	norm.y = (data.x >> 16) / 65535.0;
+	norm.z = (data.y & 0xFFFF) / 65535.0;
+
+	// Dequantize using chunk bounds
+	float3 pos;
+	pos.x = lerp(chunk.PosMinMaxX.x, chunk.PosMinMaxX.y, norm.x);
+	pos.y = lerp(chunk.PosMinMaxY.x, chunk.PosMinMaxY.y, norm.y);
+	pos.z = lerp(chunk.PosMinMaxZ.x, chunk.PosMinMaxZ.y, norm.z);
+
+	return pos;
+}
+
+// Load rotation (quaternion) from buffer
+float4 LoadRotation(ByteAddressBuffer buffer, uint splatIndex)
+{
+	// OtherData layout: 4 floats rotation + 3 floats scale = 28 bytes per splat
+	uint offset = splatIndex * 28;
+	return asfloat(buffer.Load4(offset));
+}
+
+// Load scale from buffer
+float3 LoadScale(ByteAddressBuffer buffer, uint splatIndex)
+{
+	// OtherData layout: 4 floats rotation + 3 floats scale = 28 bytes per splat
+	uint offset = splatIndex * 28 + 16; // Skip rotation (16 bytes)
+	return asfloat(buffer.Load3(offset));
+}
+
+// Load color and opacity from texture (Morton-swizzled)
+float4 LoadColor(Texture2D colorTex, SamplerState colorSampler, uint splatIndex, uint2 texSize)
+{
+	uint2 coord = SplatIndexToTextureCoord(splatIndex, texSize.x);
+	float2 uv = (float2(coord) + 0.5) / float2(texSize);
+	return colorTex.SampleLevel(colorSampler, uv, 0);
+}
+
+// Load SH coefficients from buffer
+void LoadSH(ByteAddressBuffer shBuffer, uint splatIndex, int numCoeffs, out float3 sh[15])
+{
+	// Assuming Float16 format: 3 channels * numCoeffs * 2 bytes
+	uint bytesPerSplat = numCoeffs * 3 * 2;
+	uint baseOffset = splatIndex * bytesPerSplat;
+
+	[unroll]
+	for (int i = 0; i < 15; i++)
+	{
+		if (i < numCoeffs)
+		{
+			uint offset = baseOffset + i * 6; // 3 half floats = 6 bytes
+			uint2 data = shBuffer.Load2(offset);
+			sh[i].x = f16tof32(data.x & 0xFFFF);
+			sh[i].y = f16tof32(data.x >> 16);
+			sh[i].z = f16tof32(data.y & 0xFFFF);
+		}
+		else
+		{
+			sh[i] = float3(0, 0, 0);
+		}
+	}
+}

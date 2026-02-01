@@ -5,3 +5,7 @@ DerivedDataCache/
 Intermediate/
 .vsconfig
 UnityGaussianSplatting/
+
+
+### claude ###
+.claude/

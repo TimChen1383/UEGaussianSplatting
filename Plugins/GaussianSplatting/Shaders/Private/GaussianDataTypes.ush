@@ -1,0 +1,256 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+// Constants
+#define SPLATS_PER_CHUNK 256
+#define COLOR_TEXTURE_WIDTH 2048
+#define MORTON_TILE_SIZE 16
+#define NUM_SH_COEFFICIENTS 15
+#define SH_C0 0.28209479177387814f
+
+// Per-frame view data structure (must match C++ FGaussianSplatViewData)
+struct FGaussianSplatViewData
+{
+	float4 ClipPosition;    // Clip space position (xyz, w)
+	uint PackedColorRG;     // Half-float packed R,G
+	uint PackedColorBA;     // Half-float packed B,A
+	float2 Axis1;           // 2D covariance principal axis 1
+	float2 Axis2;           // 2D covariance principal axis 2
+};
+
+// Chunk info for quantized data (must match C++ FGaussianChunkInfo)
+struct FGaussianChunkInfo
+{
+	float2 PosMinMaxX;
+	float2 PosMinMaxY;
+	float2 PosMinMaxZ;
+	uint ColorMinMaxR;
+	uint ColorMinMaxG;
+	uint ColorMinMaxB;
+	uint ColorMinMaxA;
+	uint ScaleMinMaxX;
+	uint ScaleMinMaxY;
+	uint ScaleMinMaxZ;
+	uint SHMinMaxR;
+	uint SHMinMaxG;
+	uint SHMinMaxB;
+};
+
+// Pack two half floats into a uint
+uint PackHalf2x16(float2 v)
+{
+	uint x = f32tof16(v.x);
+	uint y = f32tof16(v.y);
+	return (y << 16) | x;
+}
+
+// Unpack uint to two floats
+float2 UnpackHalf2x16(uint packed)
+{
+	float x = f16tof32(packed & 0xFFFF);
+	float y = f16tof32(packed >> 16);
+	return float2(x, y);
+}
+
+// Morton encoding for 16x16 tile
+uint EncodeMorton2D_16x16(uint x, uint y)
+{
+	x = x & 0xF;
+	y = y & 0xF;
+
+	x = (x | (x << 2)) & 0x33;
+	x = (x | (x << 1)) & 0x55;
+
+	y = (y | (y << 2)) & 0x33;
+	y = (y | (y << 1)) & 0x55;
+
+	return x | (y << 1);
+}
+
+// Morton decoding from 16x16 tile
+void DecodeMorton2D_16x16(uint morton, out uint x, out uint y)
+{
+	uint mx = morton & 0x55;
+	uint my = (morton >> 1) & 0x55;
+
+	mx = (mx | (mx >> 1)) & 0x33;
+	mx = (mx | (mx >> 2)) & 0x0F;
+
+	my = (my | (my >> 1)) & 0x33;
+	my = (my | (my >> 2)) & 0x0F;
+
+	x = mx;
+	y = my;
+}
+
+// Convert splat index to texture coordinate (Morton-swizzled)
+uint2 SplatIndexToTextureCoord(uint splatIndex, uint textureWidth)
+{
+	uint tilesPerRow = textureWidth / MORTON_TILE_SIZE;
+	uint tileIndex = splatIndex / (MORTON_TILE_SIZE * MORTON_TILE_SIZE);
+	uint localIndex = splatIndex % (MORTON_TILE_SIZE * MORTON_TILE_SIZE);
+
+	uint tileX = tileIndex % tilesPerRow;
+	uint tileY = tileIndex / tilesPerRow;
+
+	uint localX, localY;
+	DecodeMorton2D_16x16(localIndex, localX, localY);
+
+	return uint2(tileX * MORTON_TILE_SIZE + localX, tileY * MORTON_TILE_SIZE + localY);
+}
+
+// Quaternion rotation of a vector
+float3 QuatRotateVector(float4 q, float3 v)
+{
+	float3 t = 2.0 * cross(q.xyz, v);
+	return v + q.w * t + cross(q.xyz, t);
+}
+
+// Build rotation matrix from quaternion
+float3x3 QuatToMatrix(float4 q)
+{
+	float xx = q.x * q.x;
+	float yy = q.y * q.y;
+	float zz = q.z * q.z;
+	float xy = q.x * q.y;
+	float xz = q.x * q.z;
+	float yz = q.y * q.z;
+	float wx = q.w * q.x;
+	float wy = q.w * q.y;
+	float wz = q.w * q.z;
+
+	return float3x3(
+		1.0 - 2.0 * (yy + zz), 2.0 * (xy - wz), 2.0 * (xz + wy),
+		2.0 * (xy + wz), 1.0 - 2.0 * (xx + zz), 2.0 * (yz - wx),
+		2.0 * (xz - wy), 2.0 * (yz + wx), 1.0 - 2.0 * (xx + yy)
+	);
+}
+
+// Calculate 3D covariance matrix from rotation and scale
+// Covariance = R * S * S^T * R^T = R * diag(s^2) * R^T
+float3x3 CalcCovariance3D(float4 rotation, float3 scale)
+{
+	float3x3 R = QuatToMatrix(rotation);
+
+	// Scale matrix (diagonal)
+	float3 s2 = scale * scale;
+
+	// RS = R * diag(scale)
+	float3x3 RS;
+	RS[0] = R[0] * scale.x;
+	RS[1] = R[1] * scale.y;
+	RS[2] = R[2] * scale.z;
+
+	// Covariance = RS * RS^T
+	float3x3 cov;
+	cov[0][0] = dot(RS[0], RS[0]);
+	cov[0][1] = dot(RS[0], RS[1]);
+	cov[0][2] = dot(RS[0], RS[2]);
+	cov[1][0] = cov[0][1];
+	cov[1][1] = dot(RS[1], RS[1]);
+	cov[1][2] = dot(RS[1], RS[2]);
+	cov[2][0] = cov[0][2];
+	cov[2][1] = cov[1][2];
+	cov[2][2] = dot(RS[2], RS[2]);
+
+	return cov;
+}
+
+// Project 3D covariance to 2D screen space using EWA splatting formula
+// J is the Jacobian of the projection, W is the view matrix
+// viewPos is the position in view/camera space (x, y, z where z is depth)
+float2x2 CalcCovariance2D(float3x3 cov3D, float3x3 viewMatrix, float3 viewPos, float2 focal)
+{
+	// Transform covariance from world space to view/camera space
+	// cov_view = W * cov_world * W^T
+	float3x3 viewCov = mul(viewMatrix, mul(cov3D, transpose(viewMatrix)));
+
+	// Depth in camera space
+	float z = viewPos.z;
+	float z2 = z * z;
+
+	// Position in camera space for off-center terms
+	float x = viewPos.x;
+	float y = viewPos.y;
+
+	// Full Jacobian of perspective projection:
+	// J = [ fx/z   0    -fx*x/z² ]
+	//     [  0    fy/z  -fy*y/z² ]
+	//
+	// cov2D = J * viewCov * J^T
+
+	float fx = focal.x;
+	float fy = focal.y;
+
+	// Compute J * viewCov first (2x3 result)
+	float3 jRow0 = float3(fx/z * viewCov[0][0] - fx*x/z2 * viewCov[2][0],
+	                       fx/z * viewCov[0][1] - fx*x/z2 * viewCov[2][1],
+	                       fx/z * viewCov[0][2] - fx*x/z2 * viewCov[2][2]);
+	float3 jRow1 = float3(fy/z * viewCov[1][0] - fy*y/z2 * viewCov[2][0],
+	                       fy/z * viewCov[1][1] - fy*y/z2 * viewCov[2][1],
+	                       fy/z * viewCov[1][2] - fy*y/z2 * viewCov[2][2]);
+
+	// Then multiply by J^T (3x2)
+	// J^T = [ fx/z     0    ]
+	//       [  0      fy/z  ]
+	//       [-fx*x/z² -fy*y/z²]
+	float2x2 cov2D;
+	cov2D[0][0] = jRow0.x * fx/z + jRow0.z * (-fx*x/z2);
+	cov2D[0][1] = jRow0.y * fy/z + jRow0.z * (-fy*y/z2);
+	cov2D[1][0] = jRow1.x * fx/z + jRow1.z * (-fx*x/z2);
+	cov2D[1][1] = jRow1.y * fy/z + jRow1.z * (-fy*y/z2);
+
+	// Add small value to diagonal for numerical stability (low-pass filter)
+	cov2D[0][0] += 0.3;
+	cov2D[1][1] += 0.3;
+
+	return cov2D;
+}
+
+// Decompose 2D covariance into principal axes via eigendecomposition
+void DecomposeCovariance2D(float2x2 cov, out float2 axis1, out float2 axis2)
+{
+	float a = cov[0][0];
+	float b = cov[0][1];
+	float d = cov[1][1];
+
+	// Eigenvalues
+	float trace = a + d;
+	float det = a * d - b * b;
+	float disc = sqrt(max(0.25 * trace * trace - det, 0.0));
+
+	float lambda1 = 0.5 * trace + disc;  // Larger eigenvalue
+	float lambda2 = 0.5 * trace - disc;  // Smaller eigenvalue
+
+	// Eigenvectors (principal axes)
+	float2 v1, v2;
+	if (abs(b) > 1e-6)
+	{
+		v1 = normalize(float2(lambda1 - d, b));
+		v2 = normalize(float2(lambda2 - d, b));
+	}
+	else
+	{
+		// When b is small, eigenvalues are approximately a and d
+		// v1 corresponds to larger eigenvalue, v2 to smaller
+		if (a >= d)
+		{
+			v1 = float2(1, 0);  // Larger eigenvalue ≈ a, along x-axis
+			v2 = float2(0, 1);  // Smaller eigenvalue ≈ d, along y-axis
+		}
+		else
+		{
+			v1 = float2(0, 1);  // Larger eigenvalue ≈ d, along y-axis
+			v2 = float2(1, 0);  // Smaller eigenvalue ≈ a, along x-axis
+		}
+	}
+
+	// Scale by sqrt of eigenvalues (standard deviations)
+	// Multiply by 2 to get radius at ~95% confidence (2σ)
+	float r1 = 2.0 * sqrt(max(lambda1, 0.0));
+	float r2 = 2.0 * sqrt(max(lambda2, 0.0));
+
+	axis1 = v1 * r1;
+	axis2 = v2 * r2;
+}

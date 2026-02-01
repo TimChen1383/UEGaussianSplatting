@@ -1,0 +1,94 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#include "/Engine/Private/Common.ush"
+#include "/Plugin/GaussianSplatting/Private/GaussianDataTypes.ush"
+
+// Shader parameters
+StructuredBuffer<FGaussianSplatViewData> ViewDataBuffer;
+StructuredBuffer<uint> SortKeysBuffer;
+uint SplatCount;
+
+// Vertex shader output / Pixel shader input
+struct FVertexOutput
+{
+	float4 Position : SV_POSITION;
+	float2 LocalPos : TEXCOORD0;
+	float4 Color : TEXCOORD1;
+};
+
+// Vertex shader: generate quad from instance data
+FVertexOutput MainVS(
+	uint VertexId : SV_VertexID,
+	uint InstanceId : SV_InstanceID)
+{
+	FVertexOutput Output;
+
+	// Get sorted splat index
+	uint splatIndex = SortKeysBuffer[InstanceId];
+	FGaussianSplatViewData viewData = ViewDataBuffer[splatIndex];
+
+	// Check validity (w <= 0 means invalid/behind camera)
+	if (viewData.ClipPosition.w <= 0.0)
+	{
+		// Output degenerate triangle
+		Output.Position = float4(0, 0, 0, 1);
+		Output.LocalPos = float2(0, 0);
+		Output.Color = float4(0, 0, 0, 0);
+		return Output;
+	}
+
+	// Quad corners based on vertex ID:
+	// 0=(-1,-1), 1=(1,-1), 2=(-1,1), 3=(1,1)
+	float2 corner;
+	corner.x = (VertexId & 1) ? 1.0 : -1.0;
+	corner.y = (VertexId & 2) ? 1.0 : -1.0;
+
+	// NDC position of splat center
+	float2 ndc = viewData.ClipPosition.xy / viewData.ClipPosition.w;
+
+	// Offset by principal axes scaled by corner
+	float2 offset = corner.x * viewData.Axis1 + corner.y * viewData.Axis2;
+
+	// Final clip position
+	Output.Position = float4(
+		(ndc + offset) * viewData.ClipPosition.w,
+		viewData.ClipPosition.z,
+		viewData.ClipPosition.w
+	);
+
+	Output.LocalPos = corner;
+
+	// Unpack color
+	float2 rg = UnpackHalf2x16(viewData.PackedColorRG);
+	float2 ba = UnpackHalf2x16(viewData.PackedColorBA);
+	Output.Color = float4(rg.x, rg.y, ba.x, ba.y);
+
+	return Output;
+}
+
+// Pixel shader: Gaussian falloff with alpha blending
+float4 MainPS(FVertexOutput Input) : SV_Target
+{
+	// Gaussian: exp(-0.5 * ||x||^2 / sigma^2)
+	// The quad extends to 2*sigma at the edges (LocalPos = ±1 at 2σ boundary)
+	// So we need: exp(-0.5 * (2 * LocalPos)^2) = exp(-2 * LocalPos^2)
+	float distSq = dot(Input.LocalPos, Input.LocalPos);
+
+	// Gaussian weight with correct normalization for 2σ quad
+	float gaussianWeight = exp(-2.0 * distSq);
+
+	// Apply Gaussian to alpha
+	float4 color = Input.Color;
+	color.a *= gaussianWeight;
+
+	// Premultiplied alpha
+	color.rgb *= color.a;
+
+	// Discard nearly transparent pixels for efficiency
+	if (color.a < 0.003)
+	{
+		discard;
+	}
+
+	return color;
+}

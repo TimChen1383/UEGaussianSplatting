@@ -1,0 +1,12 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#include "GaussianSplatShaders.h"
+#include "ShaderParameterUtils.h"
+#include "RHIStaticStates.h"
+
+// Implement global shaders
+IMPLEMENT_GLOBAL_SHADER(FGaussianSplatCalcViewDataCS, "/Plugin/GaussianSplatting/Private/CalcViewData.usf", "MainCS", SF_Compute);
+IMPLEMENT_GLOBAL_SHADER(FGaussianSplatCalcDistancesCS, "/Plugin/GaussianSplatting/Private/CalcDistances.usf", "MainCS", SF_Compute);
+IMPLEMENT_GLOBAL_SHADER(FGaussianSplatVS, "/Plugin/GaussianSplatting/Private/GaussianSplatRendering.usf", "MainVS", SF_Vertex);
+IMPLEMENT_GLOBAL_SHADER(FGaussianSplatPS, "/Plugin/GaussianSplatting/Private/GaussianSplatRendering.usf", "MainPS", SF_Pixel);
+IMPLEMENT_GLOBAL_SHADER(FGaussianSplatBitonicSortCS, "/Plugin/GaussianSplatting/Private/BitonicSort.usf", "MainCS", SF_Compute);

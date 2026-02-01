@@ -4258,6 +4258,14 @@
 			"Type": "SymbolFile"
 		},
 		{
+			"Path": "$(ProjectDir)/Plugins/GaussianSplatting/Binaries/Win64/UnrealEditor-GaussianSplattingEditor.dll",
+			"Type": "DynamicLibrary"
+		},
+		{
+			"Path": "$(ProjectDir)/Plugins/GaussianSplatting/Binaries/Win64/UnrealEditor-GaussianSplattingEditor.pdb",
+			"Type": "SymbolFile"
+		},
+		{
 			"Path": "$(ProjectDir)/Plugins/GaussianSplatting/Binaries/Win64/UnrealEditor.modules",
 			"Type": "RequiredResource"
 		}

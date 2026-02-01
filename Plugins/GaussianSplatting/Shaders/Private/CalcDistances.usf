@@ -1,0 +1,51 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#include "/Engine/Public/Platform.ush"
+#include "/Plugin/GaussianSplatting/Private/GaussianDataTypes.ush"
+
+// Shader parameters
+StructuredBuffer<FGaussianSplatViewData> ViewDataBuffer;
+RWStructuredBuffer<uint> DistanceBuffer;
+RWStructuredBuffer<uint> KeyBuffer;
+uint SplatCount;
+
+#ifndef THREADGROUP_SIZE
+#define THREADGROUP_SIZE 256
+#endif
+
+[numthreads(THREADGROUP_SIZE, 1, 1)]
+void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	uint splatIndex = DispatchThreadId.x;
+	if (splatIndex >= SplatCount)
+	{
+		return;
+	}
+
+	// Load clip position from view data
+	float4 clipPos = ViewDataBuffer[splatIndex].ClipPosition;
+
+	// Invalid splat (behind camera) - marked with w <= 0
+	if (clipPos.w <= 0.0)
+	{
+		DistanceBuffer[splatIndex] = 0xFFFFFFFF; // Sort to end
+		KeyBuffer[splatIndex] = splatIndex;
+		return;
+	}
+
+	// Calculate depth (Z/W for perspective, normalized to [0,1])
+	float depth = clipPos.z / clipPos.w;
+
+	// Convert to sortable uint
+	// We want back-to-front sorting, so invert the depth
+	// Also handle negative depths properly using bit manipulation
+	uint depthBits = asuint(depth);
+
+	// Flip sign bit for proper float-to-sortable-uint conversion
+	// This ensures correct ordering for both positive and negative floats
+	depthBits ^= (-(int)(depthBits >> 31)) | 0x80000000;
+
+	// Invert for back-to-front (descending order)
+	DistanceBuffer[splatIndex] = ~depthBits;
+	KeyBuffer[splatIndex] = splatIndex;
+}

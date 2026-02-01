@@ -1,0 +1,1193 @@
+================================================================================
+         UNREAL ENGINE GAUSSIAN SPLATTING PLUGIN DEVELOPMENT PLAN
+================================================================================
+                        Reference: Unity Gaussian Splatting
+                        Focus: Import and Rendering Only
+================================================================================
+
+TABLE OF CONTENTS
+-----------------
+1. Overview & Architecture
+2. Plugin Structure
+3. Phase 1: Core Data Structures & Asset System
+4. Phase 2: PLY File Import Pipeline
+5. Phase 3: GPU Resources & Buffer Management
+6. Phase 4: Compute Shaders (View Calculation & Sorting)
+7. Phase 5: Rendering Pipeline Integration
+8. Phase 6: Optimization & Polish
+9. Technical Mapping: Unity -> Unreal
+10. File-by-File Implementation Checklist
+
+================================================================================
+1. OVERVIEW & ARCHITECTURE
+================================================================================
+
+The Gaussian Splatting renderer displays 3D scenes reconstructed from images
+using millions of oriented, colored, semi-transparent ellipsoids (splats).
+
+CORE RENDERING CONCEPT:
+-----------------------
+  1. Each Gaussian splat = 3D position + 3D scale + rotation + color + opacity
+  2. Color comes from Spherical Harmonics (view-dependent lighting)
+  3. Splats must be sorted back-to-front for correct alpha blending
+  4. GPU compute shader calculates 2D screen projection per frame
+  5. Render as camera-facing quads with Gaussian falloff
+
+HIGH-LEVEL ARCHITECTURE:
+------------------------
+  +-------------------------------------------------------------------------+
+  |                         GAUSSIAN SPLATTING PLUGIN                       |
+  +-------------------------------------------------------------------------+
+  |                                                                         |
+  |  +--------------+   +--------------+   +------------------------------+ |
+  |  |  Asset       |   |  Runtime     |   |  Rendering                   | |
+  |  |  System      |   |  Component   |   |  System                      | |
+  |  +--------------+   +--------------+   +------------------------------+ |
+  |  | UGaussian-   |   | UGaussian-   |   | FGaussianSplatSceneProxy     | |
+  |  | SplatAsset   |   | SplatComponent|  | FGaussianSplatVertexFactory  | |
+  |  |              |   |              |   | FGaussianSplatIndexBuffer    | |
+  |  | PLY Importer |   | GPU Resource |   |                              | |
+  |  | (Factory)    |   | Manager      |   | Compute Shaders:             | |
+  |  |              |   |              |   |  - CalcViewData.usf          | |
+  |  | Data Format  |   | Sort Manager |   |  - RadixSort.usf             | |
+  |  | Compression  |   |              |   |                              | |
+  |  +--------------+   +--------------+   | Render Shaders:              | |
+  |                                        |  - GaussianSplat.usf         | |
+  |                                        |  - GaussianComposite.usf     | |
+  |                                        +------------------------------+ |
+  +-------------------------------------------------------------------------+
+
+================================================================================
+2. PLUGIN STRUCTURE
+================================================================================
+
+Plugins/GaussianSplatting/
++-- GaussianSplatting.uplugin
++-- Source/
+|   +-- GaussianSplatting/                    [Runtime Module]
+|   |   +-- GaussianSplatting.Build.cs
+|   |   +-- Public/
+|   |   |   +-- GaussianSplattingModule.h
+|   |   |   +-- GaussianSplatAsset.h          # UAsset for splat data
+|   |   |   +-- GaussianSplatComponent.h      # Scene component
+|   |   |   +-- GaussianSplatRenderer.h       # Render logic coordinator
+|   |   |   +-- GaussianSplatSceneProxy.h     # FPrimitiveSceneProxy
+|   |   |   +-- GpuSorting.h                  # Radix sort manager
+|   |   |   +-- GaussianDataTypes.h           # Shared data structures
+|   |   +-- Private/
+|   |       +-- GaussianSplattingModule.cpp
+|   |       +-- GaussianSplatAsset.cpp
+|   |       +-- GaussianSplatComponent.cpp
+|   |       +-- GaussianSplatRenderer.cpp
+|   |       +-- GaussianSplatSceneProxy.cpp
+|   |       +-- GaussianSplatVertexFactory.cpp
+|   |       +-- GpuSorting.cpp
+|   |
+|   +-- GaussianSplattingEditor/              [Editor Module]
+|       +-- GaussianSplattingEditor.Build.cs
+|       +-- Public/
+|       |   +-- GaussianSplattingEditorModule.h
+|       |   +-- GaussianSplatAssetFactory.h   # Import .ply files
+|       +-- Private/
+|           +-- GaussianSplattingEditorModule.cpp
+|           +-- GaussianSplatAssetFactory.cpp
+|           +-- PLYFileReader.cpp             # PLY parser
+|           +-- GaussianSplatAssetActions.cpp # Asset type actions
+|
++-- Shaders/
+    +-- Private/
+        +-- GaussianSplatting.ush             # Common includes
+        +-- GaussianDataTypes.ush             # Struct definitions
+        +-- SphericalHarmonics.ush            # SH evaluation
+        +-- CalcViewData.usf                  # View-dependent compute
+        +-- CalcDistances.usf                 # Distance calculation
+        +-- RadixSort.usf                     # GPU radix sort
+        +-- GaussianSplatVertexFactory.ush    # Vertex factory
+        +-- GaussianSplatRendering.usf        # Main rendering shader
+        +-- GaussianComposite.usf             # Composite pass
+
+================================================================================
+3. PHASE 1: CORE DATA STRUCTURES & ASSET SYSTEM
+================================================================================
+
+3.1 DATA STRUCTURES (GaussianDataTypes.h)
+-----------------------------------------
+
+// Raw input data from PLY file (CPU-side)
+struct FGaussianSplatData
+{
+    FVector3f Position;         // World position
+    FQuat4f Rotation;           // Orientation quaternion
+    FVector3f Scale;            // 3D scale factors
+    float Opacity;              // Alpha [0,1]
+    FVector3f SH_DC;            // Spherical harmonic band 0 (base color)
+    FVector3f SH[15];           // SH bands 1-3 (15 coefficients x 3 RGB)
+};
+
+// Compressed GPU storage formats (matching Unity)
+enum class EGaussianPositionFormat : uint8
+{
+    Float32,                    // 12 bytes - full precision
+    Norm16,                     // 6 bytes  - 16-bit normalized
+    Norm11,                     // 4 bytes  - 11.10.11 packed
+    Norm6                       // 2 bytes  - 6.5.5 packed (lowest quality)
+};
+
+enum class EGaussianColorFormat : uint8
+{
+    Float32x4,                  // 16 bytes
+    Float16x4,                  // 8 bytes
+    Norm8x4,                    // 4 bytes (RGBA8)
+    BC7                         // ~1 byte (compressed)
+};
+
+enum class EGaussianSHFormat : uint8
+{
+    Float32,                    // Full precision
+    Float16,                    // Half precision
+    Norm11,                     // Packed
+    Norm6,                      // Very compressed
+    Cluster4k to Cluster64k    // Clustered (share SH between similar splats)
+};
+
+// Per-frame view data (computed by compute shader, used by vertex shader)
+struct FGaussianSplatViewData
+{
+    FVector4f ClipPosition;     // Screen-space position
+    uint32 PackedColorRG;       // Half-float packed R,G
+    uint32 PackedColorBA;       // Half-float packed B,A
+    FVector2f Axis1;            // 2D covariance principal axis 1
+    FVector2f Axis2;            // 2D covariance principal axis 2
+};
+
+// Chunk info for quantized data (256 splats per chunk)
+struct FGaussianChunkInfo
+{
+    FVector2f PosMinMax[3];     // Position bounds per axis
+    uint32 ColorMinMax[4];      // Color channel bounds (packed)
+    uint32 ScaleMinMax[3];      // Scale bounds
+    uint32 SHMinMax[3];         // SH bounds
+};
+
+
+3.2 ASSET CLASS (GaussianSplatAsset.h)
+--------------------------------------
+
+UCLASS(BlueprintType)
+class GAUSSIANSPLATTING_API UGaussianSplatAsset : public UObject
+{
+    GENERATED_BODY()
+
+public:
+    // Metadata
+    UPROPERTY(VisibleAnywhere)
+    int32 SplatCount;
+
+    UPROPERTY(VisibleAnywhere)
+    FBox BoundingBox;
+
+    // Format settings
+    UPROPERTY(VisibleAnywhere)
+    EGaussianPositionFormat PositionFormat;
+
+    UPROPERTY(VisibleAnywhere)
+    EGaussianColorFormat ColorFormat;
+
+    UPROPERTY(VisibleAnywhere)
+    EGaussianSHFormat SHFormat;
+
+    // Raw data (stored in bulk data for large assets)
+    UPROPERTY()
+    TArray<uint8> PositionData;     // Compressed positions
+
+    UPROPERTY()
+    TArray<uint8> OtherData;        // Rotation + Scale
+
+    UPROPERTY()
+    TArray<uint8> SHData;           // Spherical harmonics
+
+    // Chunk quantization info
+    UPROPERTY()
+    TArray<FGaussianChunkInfo> ChunkData;
+
+    // Color stored as texture for cache coherency
+    UPROPERTY()
+    UTexture2D* ColorTexture;       // 2048 x N, Morton-swizzled
+
+    // Serialization
+    virtual void Serialize(FArchive& Ar) override;
+
+    // Accessors
+    int32 GetSplatCount() const { return SplatCount; }
+    FBox GetBounds() const { return BoundingBox; }
+};
+
+IMPLEMENTATION NOTES:
+- Use FByteBulkData for large arrays to avoid loading everything into memory
+- ColorTexture uses Morton (Z-order) swizzling for GPU cache coherency
+- ChunkData enables efficient quantization/dequantization on GPU
+
+
+3.3 SCENE COMPONENT (GaussianSplatComponent.h)
+----------------------------------------------
+
+UCLASS(ClassGroup=(Rendering), meta=(BlueprintSpawnableComponent))
+class GAUSSIANSPLATTING_API UGaussianSplatComponent : public UPrimitiveComponent
+{
+    GENERATED_BODY()
+
+public:
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Gaussian Splatting")
+    UGaussianSplatAsset* SplatAsset;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Gaussian Splatting")
+    int32 SHOrder = 3;              // 0-3, higher = more color detail
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Gaussian Splatting")
+    int32 SortEveryNthFrame = 1;    // 1 = every frame, 2 = every other, etc.
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Gaussian Splatting")
+    float OpacityScale = 1.0f;
+
+    // UPrimitiveComponent interface
+    virtual FPrimitiveSceneProxy* CreateSceneProxy() override;
+    virtual FBoxSphereBounds CalcBounds(const FTransform& LocalToWorld) const override;
+
+    // GPU resource management
+    void InitializeGPUResources();
+    void ReleaseGPUResources();
+
+private:
+    // GPU buffers (managed by renderer)
+    TSharedPtr<FGaussianSplatRenderer> Renderer;
+};
+
+================================================================================
+4. PHASE 2: PLY FILE IMPORT PIPELINE
+================================================================================
+
+4.1 PLY FILE FORMAT
+-------------------
+Standard PLY files from 3D Gaussian Splatting contain:
+
+Header:
+  ply
+  format binary_little_endian 1.0
+  element vertex [count]
+  property float x
+  property float y
+  property float z
+  property float f_dc_0        # SH band 0, R
+  property float f_dc_1        # SH band 0, G
+  property float f_dc_2        # SH band 0, B
+  property float f_rest_0      # SH bands 1-3 (45 values)
+  ...
+  property float f_rest_44
+  property float opacity
+  property float scale_0
+  property float scale_1
+  property float scale_2
+  property float rot_0         # Quaternion w
+  property float rot_1         # Quaternion x
+  property float rot_2         # Quaternion y
+  property float rot_3         # Quaternion z
+  end_header
+  [binary data]
+
+
+4.2 ASSET FACTORY (GaussianSplatAssetFactory.cpp)
+-------------------------------------------------
+
+UCLASS()
+class UGaussianSplatAssetFactory : public UFactory
+{
+    GENERATED_BODY()
+
+public:
+    UGaussianSplatAssetFactory();
+
+    // UFactory interface
+    virtual bool CanCreateNew() const override { return false; }
+    virtual bool FactoryCanImport(const FString& Filename) override;
+    virtual UObject* FactoryCreateFile(
+        UClass* InClass,
+        UObject* InParent,
+        FName InName,
+        EObjectFlags Flags,
+        const FString& Filename,
+        const TCHAR* Parms,
+        FFeedbackContext* Warn,
+        bool& bOutOperationCanceled
+    ) override;
+
+    // Import settings
+    UPROPERTY(EditAnywhere)
+    EGaussianQualityLevel QualityLevel = EGaussianQualityLevel::Medium;
+};
+
+enum class EGaussianQualityLevel : uint8
+{
+    VeryHigh,   // No compression, ~48 bytes/splat
+    High,       // Light compression, ~24 bytes/splat
+    Medium,     // Moderate compression, ~12 bytes/splat (default)
+    Low,        // Heavy compression, ~8 bytes/splat
+    VeryLow     // Maximum compression, ~4 bytes/splat
+};
+
+
+4.3 PLY READER (PLYFileReader.cpp)
+----------------------------------
+
+class FPLYFileReader
+{
+public:
+    struct FPLYHeader
+    {
+        int32 VertexCount;
+        bool bBinaryLittleEndian;
+        TArray<FString> PropertyNames;
+        TMap<FString, int32> PropertyOffsets;
+        int32 VertexStride;
+    };
+
+    static bool ParseHeader(const FString& FilePath, FPLYHeader& OutHeader);
+    static bool ReadVertexData(
+        const FString& FilePath,
+        const FPLYHeader& Header,
+        TArray<FGaussianSplatData>& OutSplats
+    );
+
+private:
+    // Data conversion helpers
+    static void LinearizeSplatData(FGaussianSplatData& Splat);
+    static FQuat4f NormalizeRotation(float w, float x, float y, float z);
+    static FVector3f ConvertSHToColor(const FVector3f& SH_DC);
+};
+
+LINEARIZATION PROCESS (matching Unity):
+1. Rotation: Normalize quaternion
+2. Scale: exp(scale) - PLY stores log-scale
+3. Opacity: sigmoid(opacity) = 1 / (1 + exp(-opacity))
+4. Color SH0: (0.5 + SH_C0 * sh_dc) where SH_C0 = 0.28209479
+
+
+4.4 COMPRESSION PIPELINE
+------------------------
+
+class FGaussianDataCompressor
+{
+public:
+    // Compress raw data based on quality level
+    static void CompressPositions(
+        const TArray<FGaussianSplatData>& Input,
+        EGaussianPositionFormat Format,
+        TArray<uint8>& OutData,
+        TArray<FGaussianChunkInfo>& OutChunks
+    );
+
+    static void CompressRotationScale(
+        const TArray<FGaussianSplatData>& Input,
+        TArray<uint8>& OutData
+    );
+
+    static UTexture2D* CreateColorTexture(
+        const TArray<FGaussianSplatData>& Input,
+        EGaussianColorFormat Format
+    );
+
+    static void CompressSH(
+        const TArray<FGaussianSplatData>& Input,
+        EGaussianSHFormat Format,
+        TArray<uint8>& OutData
+    );
+
+private:
+    // Chunk-based quantization (256 splats per chunk)
+    static void CalculateChunkBounds(
+        const TArray<FGaussianSplatData>& Input,
+        int32 ChunkIndex,
+        FGaussianChunkInfo& OutChunk
+    );
+
+    // Morton-order swizzling for texture
+    static int32 EncodeMorton2D_16x16(int32 X, int32 Y);
+};
+
+================================================================================
+5. PHASE 3: GPU RESOURCES & BUFFER MANAGEMENT
+================================================================================
+
+5.1 GPU RESOURCE TYPES
+----------------------
+
+In Unreal Engine, we use:
+- FStructuredBuffer / FRWStructuredBuffer for compute access
+- FVertexBuffer for rendering
+- FTexture2DRHIRef for color data
+- FRDGBuffer for render graph integration
+
+class FGaussianSplatGPUResources
+{
+public:
+    // Static data (uploaded once from asset)
+    FStructuredBufferRHIRef PositionBuffer;     // Compressed positions
+    FStructuredBufferRHIRef OtherDataBuffer;    // Rotation + Scale
+    FStructuredBufferRHIRef SHBuffer;           // Spherical harmonics
+    FStructuredBufferRHIRef ChunkBuffer;        // Chunk quantization info
+    FTexture2DRHIRef ColorTexture;              // Morton-swizzled colors
+
+    // Dynamic data (per-frame)
+    FRWStructuredBuffer ViewDataBuffer;         // Computed view data
+    FRWStructuredBuffer SortDistanceBuffer;     // Camera distances
+    FRWStructuredBuffer SortKeysBuffer;         // Sort indices (double-buffered)
+    FRWStructuredBuffer SortKeysBufferAlt;      // Alternate for swap
+
+    // Vertex/Index buffers for rendering
+    FBufferRHIRef IndexBuffer;                  // Quad indices (0,1,2,1,3,2 pattern)
+
+    // Management
+    void Initialize(UGaussianSplatAsset* Asset);
+    void Release();
+    bool IsValid() const;
+
+    int32 SplatCount = 0;
+};
+
+
+5.2 BUFFER INITIALIZATION
+-------------------------
+
+void FGaussianSplatGPUResources::Initialize(UGaussianSplatAsset* Asset)
+{
+    SplatCount = Asset->GetSplatCount();
+
+    // Create static buffers
+    FRHIResourceCreateInfo CreateInfo(TEXT("GaussianPositions"));
+    PositionBuffer = RHICreateStructuredBuffer(
+        Asset->PositionData.GetTypeSize(),
+        Asset->PositionData.Num(),
+        BUF_ShaderResource | BUF_Static,
+        CreateInfo
+    );
+
+    // Upload data
+    void* Data = RHILockBuffer(PositionBuffer, 0, Asset->PositionData.Num(), RLM_WriteOnly);
+    FMemory::Memcpy(Data, Asset->PositionData.GetData(), Asset->PositionData.Num());
+    RHIUnlockBuffer(PositionBuffer);
+
+    // Similarly for OtherDataBuffer, SHBuffer, ChunkBuffer...
+
+    // Create dynamic buffers (read-write for compute)
+    ViewDataBuffer.Initialize(
+        TEXT("GaussianViewData"),
+        sizeof(FGaussianSplatViewData),
+        SplatCount,
+        BUF_UnorderedAccess | BUF_ShaderResource
+    );
+
+    SortDistanceBuffer.Initialize(
+        TEXT("GaussianSortDist"),
+        sizeof(uint32),
+        SplatCount,
+        BUF_UnorderedAccess | BUF_ShaderResource
+    );
+
+    // Double-buffered sort keys for radix sort
+    SortKeysBuffer.Initialize(...);
+    SortKeysBufferAlt.Initialize(...);
+
+    // Index buffer for quad rendering (6 indices per splat: 2 triangles)
+    CreateIndexBuffer();
+}
+
+void FGaussianSplatGPUResources::CreateIndexBuffer()
+{
+    // Unity uses a simple 0,1,2,1,3,2 pattern per instance
+    // In UE, we can use DrawIndexedInstanced with 6 indices
+    TArray<uint16> Indices = { 0, 1, 2, 1, 3, 2 };
+
+    FRHIResourceCreateInfo CreateInfo(TEXT("GaussianSplatIndices"));
+    IndexBuffer = RHICreateIndexBuffer(
+        sizeof(uint16),
+        Indices.Num() * sizeof(uint16),
+        BUF_Static,
+        CreateInfo
+    );
+    // Upload indices...
+}
+
+================================================================================
+6. PHASE 4: COMPUTE SHADERS (VIEW CALCULATION & SORTING)
+================================================================================
+
+6.1 COMPUTE SHADER FRAMEWORK
+----------------------------
+
+Unreal uses Global Shaders for compute operations:
+
+// GaussianSplatComputeShaders.h
+class FCalcViewDataCS : public FGlobalShader
+{
+    DECLARE_GLOBAL_SHADER(FCalcViewDataCS);
+    SHADER_USE_PARAMETER_STRUCT(FCalcViewDataCS, FGlobalShader);
+
+    BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+        SHADER_PARAMETER_SRV(StructuredBuffer<float>, PositionBuffer)
+        SHADER_PARAMETER_SRV(StructuredBuffer<uint>, OtherDataBuffer)
+        SHADER_PARAMETER_SRV(StructuredBuffer<float>, SHBuffer)
+        SHADER_PARAMETER_SRV(StructuredBuffer<FGaussianChunkInfo>, ChunkBuffer)
+        SHADER_PARAMETER_TEXTURE(Texture2D, ColorTexture)
+        SHADER_PARAMETER_SAMPLER(SamplerState, ColorSampler)
+        SHADER_PARAMETER_UAV(RWStructuredBuffer<FGaussianSplatViewData>, ViewDataBuffer)
+        SHADER_PARAMETER(FMatrix44f, LocalToWorld)
+        SHADER_PARAMETER(FMatrix44f, WorldToClip)
+        SHADER_PARAMETER(FVector3f, CameraPosition)
+        SHADER_PARAMETER(FVector2f, ScreenSize)
+        SHADER_PARAMETER(int32, SplatCount)
+        SHADER_PARAMETER(int32, SHOrder)
+        SHADER_PARAMETER(float, OpacityScale)
+    END_SHADER_PARAMETER_STRUCT()
+
+    static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Params)
+    {
+        return IsFeatureLevelSupported(Params.Platform, ERHIFeatureLevel::SM5);
+    }
+};
+
+IMPLEMENT_GLOBAL_SHADER(FCalcViewDataCS, "/Plugin/GaussianSplatting/Private/CalcViewData.usf", "MainCS", SF_Compute);
+
+
+6.2 CALC VIEW DATA SHADER (CalcViewData.usf)
+--------------------------------------------
+
+#include "/Plugin/GaussianSplatting/Private/GaussianSplatting.ush"
+#include "/Plugin/GaussianSplatting/Private/SphericalHarmonics.ush"
+
+[numthreads(256, 1, 1)]
+void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+    uint SplatIndex = DispatchThreadId.x;
+    if (SplatIndex >= SplatCount)
+        return;
+
+    // Load splat data (with chunk dequantization)
+    float3 Position = LoadPosition(SplatIndex);
+    float4 Rotation = LoadRotation(SplatIndex);
+    float3 Scale = LoadScale(SplatIndex);
+    float Opacity = LoadOpacity(SplatIndex) * OpacityScale;
+
+    // Transform to world space
+    float4 WorldPos = mul(LocalToWorld, float4(Position, 1.0));
+
+    // Transform to clip space
+    float4 ClipPos = mul(WorldToClip, WorldPos);
+
+    // Cull if behind camera
+    if (ClipPos.w <= 0)
+    {
+        ViewDataBuffer[SplatIndex].ClipPosition = float4(0, 0, 0, -1); // Mark invalid
+        return;
+    }
+
+    // Calculate 3D covariance matrix from rotation + scale
+    float3x3 Covariance3D = CalcCovariance3D(Rotation, Scale);
+
+    // Project to 2D screen covariance (EWA Splatting)
+    float3x3 ViewMatrix = (float3x3)WorldToView;
+    float2x2 Covariance2D = CalcCovariance2D(Covariance3D, ViewMatrix, ClipPos);
+
+    // Decompose into principal axes (eigendecomposition)
+    float2 Axis1, Axis2;
+    DecomposeCovariance2D(Covariance2D, Axis1, Axis2);
+
+    // Calculate view direction for spherical harmonics
+    float3 ViewDir = normalize(WorldPos.xyz - CameraPosition);
+
+    // Evaluate spherical harmonics for view-dependent color
+    float3 SHColor = EvaluateSH(SplatIndex, ViewDir, SHOrder);
+
+    // Clamp and apply opacity
+    float4 FinalColor = float4(max(SHColor, 0), Opacity);
+
+    // Pack and store
+    FGaussianSplatViewData ViewData;
+    ViewData.ClipPosition = ClipPos;
+    ViewData.PackedColorRG = PackHalf2x16(FinalColor.rg);
+    ViewData.PackedColorBA = PackHalf2x16(FinalColor.ba);
+    ViewData.Axis1 = Axis1;
+    ViewData.Axis2 = Axis2;
+
+    ViewDataBuffer[SplatIndex] = ViewData;
+}
+
+
+6.3 DISTANCE CALCULATION (CalcDistances.usf)
+--------------------------------------------
+
+[numthreads(256, 1, 1)]
+void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+    uint SplatIndex = DispatchThreadId.x;
+    if (SplatIndex >= SplatCount)
+        return;
+
+    // Load clip position from view data
+    float4 ClipPos = ViewDataBuffer[SplatIndex].ClipPosition;
+
+    // Invalid splat (behind camera)
+    if (ClipPos.w <= 0)
+    {
+        DistanceBuffer[SplatIndex] = 0xFFFFFFFF; // Sort to end
+        KeyBuffer[SplatIndex] = SplatIndex;
+        return;
+    }
+
+    // Calculate depth (Z/W for perspective)
+    float Depth = ClipPos.z / ClipPos.w;
+
+    // Convert to sortable uint (flip sign bit for proper sorting)
+    uint DepthBits = asuint(Depth);
+    DepthBits ^= (-(int)(DepthBits >> 31)) | 0x80000000;
+
+    // Back-to-front: invert for descending sort
+    DistanceBuffer[SplatIndex] = ~DepthBits;
+    KeyBuffer[SplatIndex] = SplatIndex;
+}
+
+
+6.4 GPU RADIX SORT (RadixSort.usf)
+----------------------------------
+
+8-bit LSD (Least Significant Digit) Radix Sort, 4 passes for 32-bit keys.
+Ported from Unity's DeviceRadixSort (Thomas Smith implementation).
+
+// Radix sort parameters
+#define RADIX_BITS 8
+#define RADIX_SIZE (1 << RADIX_BITS)  // 256
+#define KEYS_PER_THREAD 4
+#define THREADS_PER_GROUP 256
+
+// Shared memory for local histogram
+groupshared uint SharedHistogram[RADIX_SIZE];
+groupshared uint SharedScan[RADIX_SIZE];
+
+// Pass 1: Upsweep - count digit frequencies
+[numthreads(THREADS_PER_GROUP, 1, 1)]
+void RadixSortUpsweepCS(uint3 GroupId : SV_GroupID, uint3 GTid : SV_GroupThreadID)
+{
+    // Count occurrences of each digit in this group's range
+    // Store to global histogram buffer
+}
+
+// Pass 2: Scan - prefix sum of histogram
+[numthreads(THREADS_PER_GROUP, 1, 1)]
+void RadixSortScanCS(uint3 GTid : SV_GroupThreadID)
+{
+    // Parallel prefix sum over histogram
+}
+
+// Pass 3: Downsweep - scatter elements to sorted position
+[numthreads(THREADS_PER_GROUP, 1, 1)]
+void RadixSortDownsweepCS(uint3 GroupId : SV_GroupID, uint3 GTid : SV_GroupThreadID)
+{
+    // Read key, extract digit
+    // Look up scatter position from scanned histogram
+    // Write key and value to output buffers
+}
+
+SORTING ORCHESTRATION (CPU side):
+
+void FGpuSorting::Sort(FRHICommandList& RHICmdList, int32 Count)
+{
+    // 4 passes for 32-bit keys (8 bits per pass)
+    for (int32 Pass = 0; Pass < 4; Pass++)
+    {
+        int32 BitOffset = Pass * RADIX_BITS;
+
+        // Upsweep: count digits
+        DispatchUpsweep(RHICmdList, Count, BitOffset);
+
+        // Scan: prefix sum
+        DispatchScan(RHICmdList);
+
+        // Downsweep: scatter
+        DispatchDownsweep(RHICmdList, Count, BitOffset);
+
+        // Swap buffers for next pass
+        Swap(KeyBufferIn, KeyBufferOut);
+        Swap(ValueBufferIn, ValueBufferOut);
+    }
+}
+
+================================================================================
+7. PHASE 5: RENDERING PIPELINE INTEGRATION
+================================================================================
+
+7.1 SCENE PROXY (GaussianSplatSceneProxy.h)
+-------------------------------------------
+
+class FGaussianSplatSceneProxy : public FPrimitiveSceneProxy
+{
+public:
+    FGaussianSplatSceneProxy(const UGaussianSplatComponent* Component);
+    virtual ~FGaussianSplatSceneProxy();
+
+    // FPrimitiveSceneProxy interface
+    virtual SIZE_T GetTypeHash() const override;
+    virtual uint32 GetMemoryFootprint() const override;
+    virtual FPrimitiveViewRelevance GetViewRelevance(const FSceneView* View) const override;
+
+    virtual void GetDynamicMeshElements(
+        const TArray<const FSceneView*>& Views,
+        const FSceneViewFamily& ViewFamily,
+        uint32 VisibilityMap,
+        FMeshElementCollector& Collector
+    ) const override;
+
+    // Custom rendering
+    void RenderSplats(FRHICommandList& RHICmdList, const FSceneView& View) const;
+
+private:
+    // GPU resources
+    TSharedPtr<FGaussianSplatGPUResources> GPUResources;
+
+    // Compute dispatchers
+    void DispatchViewCalculation(FRHICommandList& RHICmdList, const FSceneView& View) const;
+    void DispatchSorting(FRHICommandList& RHICmdList) const;
+
+    // Render state
+    int32 SplatCount;
+    int32 SHOrder;
+    float OpacityScale;
+    FMatrix LocalToWorld;
+};
+
+
+7.2 VERTEX FACTORY (GaussianSplatVertexFactory.h)
+-------------------------------------------------
+
+Since we're using instanced rendering with procedural vertex generation,
+we need a custom vertex factory:
+
+class FGaussianSplatVertexFactory : public FVertexFactory
+{
+    DECLARE_VERTEX_FACTORY_TYPE(FGaussianSplatVertexFactory);
+
+public:
+    struct FDataType
+    {
+        FRHIShaderResourceView* ViewDataSRV;
+        FRHIShaderResourceView* SortKeysSRV;
+    };
+
+    FGaussianSplatVertexFactory(ERHIFeatureLevel::Type InFeatureLevel);
+
+    void SetData(const FDataType& InData);
+
+    static bool ShouldCompilePermutation(const FVertexFactoryShaderPermutationParameters& Params);
+    static void ModifyCompilationEnvironment(const FVertexFactoryShaderPermutationParameters& Params,
+                                              FShaderCompilerEnvironment& OutEnvironment);
+
+    // RHI interface
+    virtual void InitRHI(FRHICommandListBase& RHICmdList) override;
+    virtual void ReleaseRHI() override;
+
+private:
+    FDataType Data;
+};
+
+
+7.3 RENDERING SHADER (GaussianSplatRendering.usf)
+-------------------------------------------------
+
+#include "/Engine/Private/Common.ush"
+#include "/Plugin/GaussianSplatting/Private/GaussianDataTypes.ush"
+
+// Buffers bound from vertex factory
+StructuredBuffer<FGaussianSplatViewData> ViewDataBuffer;
+StructuredBuffer<uint> SortKeysBuffer;
+
+struct FVertexOutput
+{
+    float4 Position : SV_POSITION;
+    float2 LocalPos : TEXCOORD0;  // Position within quad [-1,1]
+    float4 Color : TEXCOORD1;
+};
+
+// Vertex shader: generate quad from instance data
+FVertexOutput MainVS(
+    uint VertexId : SV_VertexID,
+    uint InstanceId : SV_InstanceID)
+{
+    FVertexOutput Output;
+
+    // Get sorted splat index
+    uint SplatIndex = SortKeysBuffer[InstanceId];
+    FGaussianSplatViewData ViewData = ViewDataBuffer[SplatIndex];
+
+    // Check validity
+    if (ViewData.ClipPosition.w <= 0)
+    {
+        Output.Position = float4(0, 0, 0, 0); // Degenerate
+        Output.LocalPos = float2(0, 0);
+        Output.Color = float4(0, 0, 0, 0);
+        return Output;
+    }
+
+    // Quad corners: 0=(-1,-1), 1=(1,-1), 2=(-1,1), 3=(1,1)
+    float2 Corner = float2(
+        (VertexId & 1) ? 1.0 : -1.0,
+        (VertexId & 2) ? 1.0 : -1.0
+    );
+
+    // NDC position
+    float2 NDC = ViewData.ClipPosition.xy / ViewData.ClipPosition.w;
+
+    // Offset by principal axes scaled by corner
+    float2 Offset = Corner.x * ViewData.Axis1 + Corner.y * ViewData.Axis2;
+
+    Output.Position = float4(
+        (NDC + Offset) * ViewData.ClipPosition.w,
+        ViewData.ClipPosition.z,
+        ViewData.ClipPosition.w
+    );
+
+    Output.LocalPos = Corner;
+    Output.Color = float4(
+        UnpackHalf2x16(ViewData.PackedColorRG),
+        UnpackHalf2x16(ViewData.PackedColorBA)
+    );
+
+    return Output;
+}
+
+// Fragment shader: Gaussian falloff
+float4 MainPS(FVertexOutput Input) : SV_Target
+{
+    // Gaussian: exp(-0.5 * ||x||^2), but we use exp(-||x||^2) with scaled axes
+    float GaussianWeight = exp(-dot(Input.LocalPos, Input.LocalPos));
+
+    // Apply Gaussian to alpha (color is pre-multiplied)
+    float4 Color = Input.Color;
+    Color.a *= GaussianWeight;
+
+    // Premultiplied alpha
+    Color.rgb *= Color.a;
+
+    return Color;
+}
+
+
+7.4 BLEND STATE & RENDER TARGET
+-------------------------------
+
+// Blend mode: OneMinusDstAlpha, One (for correct back-to-front blending)
+FGraphicsPipelineStateInitializer PSOInit;
+PSOInit.BlendState.RenderTarget[0].BlendEnable = true;
+PSOInit.BlendState.RenderTarget[0].ColorSrcBlend = EBlendFactor::BF_OneMinusDestAlpha;
+PSOInit.BlendState.RenderTarget[0].ColorDestBlend = EBlendFactor::BF_One;
+PSOInit.BlendState.RenderTarget[0].AlphaSrcBlend = EBlendFactor::BF_OneMinusDestAlpha;
+PSOInit.BlendState.RenderTarget[0].AlphaDestBlend = EBlendFactor::BF_One;
+
+// Render to intermediate RT (R16G16B16A16_Float for HDR)
+// Then composite to scene color
+
+
+7.5 RENDER GRAPH INTEGRATION (For UE5)
+--------------------------------------
+
+// Custom render pass using RDG
+class FGaussianSplatRenderPass
+{
+public:
+    static void AddPass(
+        FRDGBuilder& GraphBuilder,
+        const FViewInfo& View,
+        FRDGTextureRef SceneColor,
+        const FGaussianSplatSceneProxy* Proxy)
+    {
+        // Allocate temporary render target
+        FRDGTextureDesc RTDesc = FRDGTextureDesc::Create2D(
+            View.ViewRect.Size(),
+            PF_FloatRGBA,
+            FClearValueBinding::Transparent,
+            TexCreate_RenderTargetable | TexCreate_ShaderResource
+        );
+        FRDGTextureRef SplatRT = GraphBuilder.CreateTexture(RTDesc, TEXT("GaussianSplatRT"));
+
+        // Pass 1: Compute view data
+        AddComputePass(GraphBuilder, View, Proxy, TEXT("GaussianSplatViewCalc"));
+
+        // Pass 2: Sort splats
+        AddSortPass(GraphBuilder, Proxy, TEXT("GaussianSplatSort"));
+
+        // Pass 3: Render splats to intermediate RT
+        AddRenderPass(GraphBuilder, View, SplatRT, Proxy, TEXT("GaussianSplatRender"));
+
+        // Pass 4: Composite to scene color
+        AddCompositePass(GraphBuilder, View, SplatRT, SceneColor, TEXT("GaussianSplatComposite"));
+    }
+};
+
+================================================================================
+8. PHASE 6: OPTIMIZATION & POLISH
+================================================================================
+
+8.1 PERFORMANCE OPTIMIZATIONS
+-----------------------------
+
+A. Sorting Frequency
+   - Allow sorting every Nth frame (reduces GPU work)
+   - For static cameras, sorting once may be sufficient
+   - Configurable via SortEveryNthFrame property
+
+B. Level of Detail
+   - Skip small splats below pixel threshold
+   - Reduce SH order for distant splats
+   - Chunk-based culling using bounding boxes
+
+C. Frustum Culling
+   - Per-chunk frustum tests
+   - Early-out in compute shader for off-screen chunks
+
+D. Memory Bandwidth
+   - Morton-order color texture for cache coherency
+   - Packed data formats to minimize bandwidth
+   - Async compute for sort/view calculation
+
+E. Multi-Threading
+   - Async compute queue for sorting
+   - Overlap compute with previous frame's render
+
+
+8.2 QUALITY SETTINGS
+--------------------
+
+UPROPERTY(EditAnywhere, Category="Quality")
+struct FGaussianSplatQualitySettings
+{
+    // Compression
+    EGaussianQualityLevel ImportQuality = EGaussianQualityLevel::Medium;
+
+    // Runtime
+    int32 MaxSHOrder = 3;           // 0-3
+    int32 SortEveryNthFrame = 1;    // 1-10
+    float MinSplatSize = 0.001f;    // Skip tiny splats
+    bool bEnableFrustumCulling = true;
+    bool bUseAsyncCompute = true;
+};
+
+
+8.3 DEBUG VISUALIZATION
+-----------------------
+
+- Wireframe mode (show splat ellipses)
+- Heat map (splat density)
+- Depth visualization
+- Sort order visualization
+- SH band isolation (view individual bands)
+
+
+8.4 EDITOR INTEGRATION
+----------------------
+
+A. Asset Thumbnail
+   - Render small preview of splat cloud
+
+B. Viewport Preview
+   - Real-time rendering in editor viewport
+   - Show bounds, splat count stats
+
+C. Details Panel
+   - Asset info (splat count, memory usage, bounds)
+   - Quality settings
+   - Performance stats (render time, sort time)
+
+================================================================================
+9. TECHNICAL MAPPING: UNITY -> UNREAL
+================================================================================
+
+Unity Concept                    | Unreal Equivalent
+---------------------------------+--------------------------------------
+ScriptableObject                 | UObject / UDataAsset
+MonoBehaviour                    | UActorComponent / UPrimitiveComponent
+Camera.onPreCull                 | FSceneViewExtension / Render callback
+GraphicsBuffer                   | FStructuredBuffer / FRWBuffer
+ComputeShader                    | FGlobalShader (SF_Compute)
+Material/Shader                  | UMaterial + USF shaders
+DrawProcedural                   | RHICmdList.DrawPrimitive
+DrawProceduralIndirect           | RHICmdList.DrawPrimitiveIndirect
+RenderTexture                    | FRDGTexture / FTexture2DRHIRef
+CommandBuffer                    | FRHICommandList / FRDGBuilder
+SetRandomWriteTarget             | UAV binding in compute shader
+Graphics.Blit                    | DrawScreenPass / AddCopyTexturePass
+AssetImporter                    | UFactory
+EditorWindow                     | SWindow / FTabManager
+CustomEditor                     | IDetailCustomization
+SerializedProperty               | FProperty / TFieldIterator
+
+================================================================================
+10. FILE-BY-FILE IMPLEMENTATION CHECKLIST
+================================================================================
+
+PHASE 1: Setup & Data Types
+[ ] GaussianSplatting.uplugin
+[ ] GaussianSplatting.Build.cs
+[ ] GaussianSplattingEditor.Build.cs
+[ ] GaussianSplattingModule.h/cpp
+[ ] GaussianSplattingEditorModule.h/cpp
+[ ] GaussianDataTypes.h (structs, enums)
+
+PHASE 2: Asset System
+[ ] GaussianSplatAsset.h/cpp
+[ ] GaussianSplatAssetFactory.h/cpp
+[ ] PLYFileReader.h/cpp
+[ ] GaussianDataCompressor.h/cpp
+
+PHASE 3: Runtime Component
+[ ] GaussianSplatComponent.h/cpp
+[ ] GaussianSplatGPUResources.h/cpp
+
+PHASE 4: Compute Shaders
+[ ] GaussianSplatting.ush (common)
+[ ] GaussianDataTypes.ush
+[ ] SphericalHarmonics.ush
+[ ] CalcViewData.usf
+[ ] CalcDistances.usf
+[ ] RadixSort.usf
+[ ] GpuSorting.h/cpp
+
+PHASE 5: Rendering
+[ ] GaussianSplatSceneProxy.h/cpp
+[ ] GaussianSplatVertexFactory.h/cpp
+[ ] GaussianSplatRendering.usf
+[ ] GaussianComposite.usf
+[ ] GaussianSplatRenderPass.h/cpp
+
+PHASE 6: Polish
+[ ] Quality settings
+[ ] Debug visualization
+[ ] Editor thumbnails
+[ ] Performance profiling
+[ ] Documentation
+
+================================================================================
+                              END OF PLAN
+================================================================================
+
+NOTES:
+------
+1. Start with VeryHigh quality (no compression) to validate rendering first
+2. Add compression formats incrementally
+3. Test with small datasets first (few thousand splats)
+4. Profile GPU performance at each phase
+5. Reference Unity shaders heavily for mathematical correctness
+
+RESOURCES:
+----------
+- Unity Gaussian Splatting: E:\UnrealProject\GSTile\UEGaussianSplatting\UnityGaussianSplatting
+- Original 3DGS paper: "3D Gaussian Splatting for Real-Time Radiance Field Rendering"
+- EWA Splatting: "EWA Volume Splatting" (Zwicker et al.)
+- Spherical Harmonics: Real-Time Rendering, 4th Edition
+
+================================================================================
+                         DEVELOPMENT LOG
+================================================================================
+
+[2026-02-01] Session 1: Initial Plugin Creation
+-----------------------------------------------
+
+COMPLETED FILES:
+[x] GaussianSplatting.uplugin
+[x] GaussianSplatting.Build.cs
+[x] GaussianSplattingEditor.Build.cs
+[x] GaussianSplatting.h/cpp (module)
+[x] GaussianSplattingEditorModule.h/cpp
+[x] GaussianDataTypes.h (structs, enums, utility functions)
+[x] GaussianSplatAsset.h/cpp
+[x] GaussianSplatComponent.h/cpp
+[x] GaussianSplatSceneProxy.h/cpp
+[x] PLYFileReader.h/cpp
+[x] GaussianSplatAssetFactory.h/cpp
+[x] GaussianSplatAssetTypeActions.h/cpp
+[x] GaussianSplatting.ush (common shader include)
+[x] GaussianDataTypes.ush (GPU struct definitions)
+[x] SphericalHarmonics.ush (SH evaluation)
+[x] CalcViewData.usf (compute shader)
+[x] GaussianSplatRendering.usf (vertex/pixel shader)
+
+NOTES:
+- Created basic plugin structure with Runtime and Editor modules
+- Implemented PLY file parser with data linearization
+- Created asset system with compression quality levels
+- GPU resources setup (buffers for positions, rotations, scales, colors, SH)
+- Shader infrastructure for view calculation and rendering
+- Editor integration with asset type actions
+
+PENDING:
+- Build testing and error fixing
+- Compute shader C++ dispatch classes (FGlobalShader)
+- GPU radix sort implementation
+- Render pass integration with UE render graph
+
+BUILD ERRORS LOG:
+-----------------
+
+Build Attempt 1 - FAILED:
+  Error 1: PLYFileReader.cpp(49) - FFileHelper::LoadFileToArray doesn't take 5 arguments
+    Fix: Use IPlatformFile::OpenRead() for partial file reads instead
+
+  Error 2: GaussianSplatAsset.cpp - FGaussianChunkInfo has no operator<< for serialization
+    Fix: Added friend FArchive& operator<< to FGaussianChunkInfo struct
+
+Build Attempt 2 - FAILED:
+  Error: LNK2019 unresolved external FToolMenuSection::AddMenuEntry
+    Fix: Added "ToolMenus" to PrivateDependencyModuleNames in GaussianSplattingEditor.Build.cs
+
+Build Attempt 3 - SUCCESS!
+  Warnings: Deprecated RHI APIs (FRHIResourceCreateInfo, CreateBuffer, etc.)
+    Note: These are warnings only, code still works. Should update to new API later:
+    - Use FRHIBufferCreateDesc instead of FRHIResourceCreateInfo
+    - Use CreateShaderResourceView with FRHIViewDesc
+
+CURRENT STATUS: Plugin compiles successfully with UE 5.6
+
+[2026-02-01] Session 2: Rendering Pipeline Implementation
+---------------------------------------------------------
+
+COMPLETED FILES:
+[x] GaussianSplatShaders.h/cpp - Global shader class declarations for compute and render shaders
+[x] CalcDistances.usf - Compute shader for distance calculation (for sorting)
+[x] BitonicSort.usf - GPU bitonic sort implementation
+[x] GaussianSplatRenderer.h/cpp - Rendering orchestration (dispatch compute shaders, sorting, drawing)
+[x] GaussianSplatViewExtension.h/cpp - Scene view extension for hooking into render pipeline
+
+NOTES:
+- Implemented complete rendering pipeline:
+  1. DispatchCalcViewData - Transform splats to screen space, evaluate SH
+  2. DispatchCalcDistances - Calculate depth for sorting
+  3. DispatchSort - Bitonic sort for back-to-front ordering
+  4. DrawSplats - Instanced quad rendering with Gaussian falloff
+- Created view extension to hook into UE render pipeline (PrePostProcessPass)
+- Scene proxy now registers/unregisters with view extension
+- Module creates and manages the view extension singleton
+
+BUILD FIXES:
+- Fixed View.ViewRect -> View.UnscaledViewRect (API change in UE 5.6)
+- Fixed BF_OneMinusSrcAlpha -> BF_InverseSourceAlpha (correct enum name)
+- Fixed missing includes (PostProcessing.h, SceneRendering.h removed as not needed)
+- Added CommonRenderResources.h for GEmptyVertexDeclaration
+
+CURRENT STATUS:
+- Plugin compiles successfully
+- Rendering pipeline is structurally complete
+- Ready for testing with actual PLY import
+
+REMAINING WORK:
+[ ] Test PLY file import end-to-end
+[ ] Verify shaders compile at runtime
+[ ] Debug rendering output
+[ ] Update deprecated RHI APIs (currently using deprecated CreateBuffer, etc.)
+[ ] Implement radix sort for better performance (currently using bitonic sort)
+[ ] Add frustum culling optimization
+[ ] Performance profiling and optimization

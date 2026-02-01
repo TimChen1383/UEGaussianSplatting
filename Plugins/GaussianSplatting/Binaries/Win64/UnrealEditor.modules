@@ -2,6 +2,7 @@
 	"BuildId": "43139311",
 	"Modules": 
 	{
-		"GaussianSplatting": "UnrealEditor-GaussianSplatting.dll"
+		"GaussianSplatting": "UnrealEditor-GaussianSplatting.dll",
+		"GaussianSplattingEditor": "UnrealEditor-GaussianSplattingEditor.dll"
 	}
 }

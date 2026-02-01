@@ -2,22 +2,27 @@
 	"FileVersion": 3,
 	"Version": 1,
 	"VersionName": "1.0",
-	"FriendlyName": "GaussianSplatting",
-	"Description": "",
-	"Category": "Other",
-	"CreatedBy": "TimChen",
+	"FriendlyName": "Gaussian Splatting",
+	"Description": "Real-time rendering of 3D Gaussian Splatting scenes",
+	"Category": "Rendering",
+	"CreatedBy": "Custom",
 	"CreatedByURL": "",
 	"DocsURL": "",
 	"MarketplaceURL": "",
 	"SupportURL": "",
 	"CanContainContent": true,
-	"IsBetaVersion": false,
+	"IsBetaVersion": true,
 	"IsExperimentalVersion": false,
 	"Installed": false,
 	"Modules": [
 		{
 			"Name": "GaussianSplatting",
 			"Type": "Runtime",
+			"LoadingPhase": "PostConfigInit"
+		},
+		{
+			"Name": "GaussianSplattingEditor",
+			"Type": "Editor",
 			"LoadingPhase": "Default"
 		}
 	]

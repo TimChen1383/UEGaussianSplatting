@@ -1,0 +1,135 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#include "/Plugin/GaussianSplatting/Private/GaussianSplatting.ush"
+
+// Shader parameters
+ByteAddressBuffer PositionBuffer;
+ByteAddressBuffer OtherDataBuffer;
+ByteAddressBuffer SHBuffer;
+StructuredBuffer<FGaussianChunkInfo> ChunkBuffer;
+Texture2D ColorTexture;
+SamplerState ColorSampler;
+RWStructuredBuffer<FGaussianSplatViewData> ViewDataBuffer;
+
+float4x4 LocalToWorld;
+float4x4 WorldToClip;
+float4x4 WorldToView;
+float3 CameraPosition;
+float2 ScreenSize;
+float2 FocalLength;
+uint SplatCount;
+uint SHOrder;
+float OpacityScale;
+float SplatScale;
+uint2 ColorTextureSize;
+uint PositionFormat; // 0=Float32, 1=Norm16, 2=Norm11, 3=Norm6
+
+[numthreads(256, 1, 1)]
+void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	uint splatIndex = DispatchThreadId.x;
+	if (splatIndex >= SplatCount)
+	{
+		return;
+	}
+
+	// Load splat data
+	float3 localPos;
+	if (PositionFormat == 0)
+	{
+		localPos = LoadPositionFloat32(PositionBuffer, splatIndex);
+	}
+	else
+	{
+		localPos = LoadPositionNorm16(PositionBuffer, ChunkBuffer, splatIndex);
+	}
+
+	float4 rotation = LoadRotation(OtherDataBuffer, splatIndex);
+	float3 scale = LoadScale(OtherDataBuffer, splatIndex) * SplatScale;
+
+	// Load color and opacity from texture
+	float4 colorOpacity = LoadColor(ColorTexture, ColorSampler, splatIndex, ColorTextureSize);
+	float opacity = colorOpacity.a * OpacityScale;
+
+	// Transform to world space
+	float4 worldPos = mul(LocalToWorld, float4(localPos, 1.0));
+
+	// Transform to view/camera space for covariance projection
+	float4 viewPos = mul(WorldToView, worldPos);
+
+	// Transform to clip space
+	float4 clipPos = mul(WorldToClip, worldPos);
+
+	// Cull if behind camera (use view space Z for proper culling)
+	if (viewPos.z <= 0.1)  // Small epsilon for near plane
+	{
+		FGaussianSplatViewData viewData;
+		viewData.ClipPosition = float4(0, 0, 0, -1); // Mark invalid
+		viewData.PackedColorRG = 0;
+		viewData.PackedColorBA = 0;
+		viewData.Axis1 = float2(0, 0);
+		viewData.Axis2 = float2(0, 0);
+		ViewDataBuffer[splatIndex] = viewData;
+		return;
+	}
+
+	// Calculate 3D covariance from rotation and scale (in local space)
+	float3x3 cov3D_local = CalcCovariance3D(rotation, scale);
+
+	// Transform covariance from local space to world space
+	// cov_world = R_local * cov_local * R_local^T
+	// where R_local is the rotation part of LocalToWorld
+	float3x3 localToWorldRot = (float3x3)LocalToWorld;
+	float3x3 cov3D_world = mul(localToWorldRot, mul(cov3D_local, transpose(localToWorldRot)));
+
+	// Get view matrix (upper 3x3)
+	float3x3 viewMat = (float3x3)WorldToView;
+
+	// Project to 2D screen covariance (pass view-space position for proper Jacobian)
+	float2x2 cov2D = CalcCovariance2D(cov3D_world, viewMat, viewPos.xyz, FocalLength);
+
+	// Decompose into principal axes
+	float2 axis1, axis2;
+	DecomposeCovariance2D(cov2D, axis1, axis2);
+
+	// Convert axes to NDC space
+	axis1 = axis1 / ScreenSize * 2.0;
+	axis2 = axis2 / ScreenSize * 2.0;
+
+	// Calculate view direction for SH
+	float3 viewDir = normalize(worldPos.xyz - CameraPosition);
+
+	// Convert view direction from UE (Z-up, X-forward) to 3DGS (Y-up, Z-forward) for SH evaluation
+	// UE->3DGS: X->Z, Y->X, Z->Y
+	float3 viewDir_3DGS = float3(viewDir.y, viewDir.z, viewDir.x);
+
+	// Evaluate spherical harmonics for view-dependent color
+	float3 shColor;
+	if (SHOrder > 0)
+	{
+		float3 sh[15];
+		LoadSH(SHBuffer, splatIndex, 15, sh);
+
+		// SH DC is stored in color texture, higher bands in SH buffer
+		float3 shDC = (colorOpacity.rgb - 0.5) / SH_C0;
+		shColor = EvaluateSH(viewDir_3DGS, shDC, sh, SHOrder);
+	}
+	else
+	{
+		// Band 0 only - use color from texture
+		shColor = colorOpacity.rgb;
+	}
+
+	// Clamp color
+	float3 finalColor = max(shColor, 0.0);
+
+	// Pack and store view data
+	FGaussianSplatViewData viewData;
+	viewData.ClipPosition = clipPos;
+	viewData.PackedColorRG = PackHalf2x16(finalColor.rg);
+	viewData.PackedColorBA = PackHalf2x16(float2(finalColor.b, opacity));
+	viewData.Axis1 = axis1;
+	viewData.Axis2 = axis2;
+
+	ViewDataBuffer[splatIndex] = viewData;
+}
