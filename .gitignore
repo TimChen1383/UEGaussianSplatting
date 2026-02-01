@@ -1,0 +1,6 @@
+### Unreal ###
+Saved/
+DerivedDataCache/
+.vs/
+Intermediate/
+.vsconfig
