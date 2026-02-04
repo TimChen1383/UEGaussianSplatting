@@ -104,6 +104,13 @@ public:
 	 */
 	void InitializeFromSplatData(const TArray<FGaussianSplatData>& InSplats, EGaussianQualityLevel InQuality);
 
+	/**
+	 * Decompress and return all splat positions (for debugging)
+	 * @return Array of world-space positions
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting|Debug")
+	TArray<FVector> GetDecompressedPositions() const;
+
 	/** Get bytes per splat for position data based on format */
 	static int32 GetPositionBytesPerSplat(EGaussianPositionFormat Format);
 

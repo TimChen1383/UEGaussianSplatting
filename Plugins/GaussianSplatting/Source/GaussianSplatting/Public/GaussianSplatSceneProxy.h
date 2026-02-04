@@ -25,7 +25,7 @@ public:
 	void Initialize(UGaussianSplatAsset* Asset);
 
 	/** Check if resources are valid */
-	bool IsValid() const { return bInitialized && SplatCount > 0; }
+	bool IsValid() const { return bInitialized && SplatCount > 0 && ColorTextureSRV.IsValid(); }
 
 	/** Get number of splats */
 	int32 GetSplatCount() const { return SplatCount; }
@@ -78,6 +78,16 @@ public:
 	FTextureRHIRef ColorTexture;
 	FShaderResourceViewRHIRef ColorTextureSRV;
 
+	/** Dummy white texture for fallback when ColorTexture isn't available */
+	FTextureRHIRef DummyWhiteTexture;
+	FShaderResourceViewRHIRef DummyWhiteTextureSRV;
+
+	/** Get a valid ColorTexture SRV (returns dummy if real one not available) */
+	FShaderResourceViewRHIRef GetColorTextureSRVOrDummy() const
+	{
+		return ColorTextureSRV.IsValid() ? ColorTextureSRV : DummyWhiteTextureSRV;
+	}
+
 private:
 	/** Create static buffers from asset data */
 	void CreateStaticBuffers(FRHICommandListBase& RHICmdList);
@@ -87,6 +97,9 @@ private:
 
 	/** Create index buffer for quad rendering */
 	void CreateIndexBuffer(FRHICommandListBase& RHICmdList);
+
+	/** Create dummy white texture for fallback */
+	void CreateDummyWhiteTexture(FRHICommandListBase& RHICmdList);
 
 private:
 	/** Cached asset data for initialization */
@@ -126,6 +139,9 @@ public:
 	/** Get GPU resources */
 	FGaussianSplatGPUResources* GetGPUResources() const { return GPUResources; }
 
+	/** Try to initialize color texture SRV if not already done */
+	void TryInitializeColorTexture(FRHICommandListBase& RHICmdList);
+
 	/** Get splat count */
 	int32 GetSplatCount() const { return SplatCount; }
 
@@ -134,6 +150,10 @@ public:
 	float GetOpacityScale() const { return OpacityScale; }
 	float GetSplatScale() const { return SplatScale; }
 	bool IsWireframe() const { return bWireframe; }
+	bool IsDebugFixedSizeQuads() const { return bDebugFixedSizeQuads; }
+	bool IsDebugBypassViewData() const { return bDebugBypassViewData; }
+	bool IsDebugWorldPositionTest() const { return bDebugWorldPositionTest; }
+	float GetDebugQuadSize() const { return DebugQuadSize; }
 
 private:
 	/** GPU resources */
@@ -149,4 +169,8 @@ private:
 	float SplatScale = 1.0f;
 	bool bWireframe = false;
 	bool bEnableFrustumCulling = true;
+	bool bDebugFixedSizeQuads = false;
+	bool bDebugBypassViewData = false;
+	bool bDebugWorldPositionTest = false;
+	float DebugQuadSize = 0.01f;
 };

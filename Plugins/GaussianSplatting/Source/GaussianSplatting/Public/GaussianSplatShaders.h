@@ -38,6 +38,7 @@ class FGaussianSplatCalcViewDataCS : public FGlobalShader
 		SHADER_PARAMETER(float, SplatScale)
 		SHADER_PARAMETER(FIntPoint, ColorTextureSize)
 		SHADER_PARAMETER(uint32, PositionFormat)
+		SHADER_PARAMETER(uint32, UseDefaultColor)  // 1 = use default color (no texture), 0 = use texture
 	END_SHADER_PARAMETER_STRUCT()
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
@@ -91,6 +92,9 @@ class FGaussianSplatVS : public FGlobalShader
 		SHADER_PARAMETER_SRV(StructuredBuffer<FGaussianSplatViewData>, ViewDataBuffer)
 		SHADER_PARAMETER_SRV(StructuredBuffer<uint>, SortKeysBuffer)
 		SHADER_PARAMETER(uint32, SplatCount)
+		SHADER_PARAMETER(uint32, DebugMode) // 0=normal, 1=fixed-size quads, 2=bypass grid, 3=world pos test
+		SHADER_PARAMETER(float, DebugSplatSize) // Size in NDC space when debug mode is enabled
+		SHADER_PARAMETER(FMatrix44f, DebugWorldToClip) // For DebugMode 3: WorldToClip matrix
 	END_SHADER_PARAMETER_STRUCT()
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
@@ -108,6 +112,7 @@ class FGaussianSplatPS : public FGlobalShader
 	SHADER_USE_PARAMETER_STRUCT(FGaussianSplatPS, FGlobalShader);
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		// Debug mode is passed from vertex shader via interpolants
 	END_SHADER_PARAMETER_STRUCT()
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)

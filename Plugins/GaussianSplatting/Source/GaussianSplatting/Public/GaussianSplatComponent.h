@@ -9,6 +9,7 @@
 
 class UGaussianSplatAsset;
 class FGaussianSplatSceneProxy;
+class UInstancedStaticMeshComponent;
 
 /**
  * Component for rendering Gaussian Splatting assets in the scene
@@ -81,6 +82,42 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaussian Splatting|Debug")
 	bool bWireframe = false;
 
+	/** Show debug points at splat positions using instanced cubes */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaussian Splatting|Debug")
+	bool bShowDebugPoints = false;
+
+	/** Size of debug point cubes in world units */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaussian Splatting|Debug", meta = (ClampMin = "0.1", ClampMax = "100.0", EditCondition = "bShowDebugPoints"))
+	float DebugPointSize = 1.0f;
+
+	/** Maximum number of debug points to display (for performance). Set to 0 for all points. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaussian Splatting|Debug", meta = (ClampMin = "0", EditCondition = "bShowDebugPoints"))
+	int32 MaxDebugPoints = 10000;
+
+	/** Debug mode: Render fixed-size colored quads instead of gaussian splats. Uses ViewDataBuffer positions. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaussian Splatting|Debug")
+	bool bDebugFixedSizeQuads = false;
+
+	/** Debug mode: Bypass ViewDataBuffer entirely and render a grid of quads at fixed screen positions.
+	 *  This tests if the draw call and rendering pipeline work at all.
+	 *  If this works but bDebugFixedSizeQuads doesn't, the issue is in CalcViewData. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaussian Splatting|Debug")
+	bool bDebugBypassViewData = false;
+
+	/** Debug mode: Render quads at known world positions (origin + ±X/Y/Z axes) to test matrix transformation.
+	 *  WHITE=origin, RED=+X, GREEN=+Y, BLUE=+Z (dark variants for negative).
+	 *  Place the component at world origin and observe where quads appear. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaussian Splatting|Debug")
+	bool bDebugWorldPositionTest = false;
+
+	/** Size of debug quads in NDC space (0.0-1.0). 0.01 = small dots, 0.05 = medium squares. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaussian Splatting|Debug", meta = (ClampMin = "0.001", ClampMax = "0.5", EditCondition = "bDebugFixedSizeQuads"))
+	float DebugQuadSize = 0.01f;
+
+	/** Rebuild the debug point visualization */
+	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting|Debug")
+	void RebuildDebugPoints();
+
 protected:
 	/** Called when the asset changes */
 	void OnAssetChanged();
@@ -92,4 +129,17 @@ private:
 	/** Cached bounds */
 	mutable FBoxSphereBounds CachedBounds;
 	mutable bool bBoundsCached = false;
+
+	/** Instanced mesh component for debug point visualization */
+	UPROPERTY()
+	TObjectPtr<UInstancedStaticMeshComponent> DebugPointsISMC;
+
+	/** Creates the debug points instanced mesh component */
+	void CreateDebugPointsComponent();
+
+	/** Destroys the debug points instanced mesh component */
+	void DestroyDebugPointsComponent();
+
+	/** Updates the debug point instances based on current settings */
+	void UpdateDebugPointInstances();
 };

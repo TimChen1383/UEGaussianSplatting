@@ -1,0 +1,35 @@
+Gaussian Splatting Render Issues - Checklist
+=============================================
+
+Symptoms:
+- Can't see splats when camera is far
+- Splats flashing and super large when close
+
+---
+
+[x] Issue #1: WRONG BLEND MODE (FIXED)
+    Location: GaussianSplatRenderer.cpp:250-254
+    Current:  BF_One, BF_InverseSourceAlpha (front-to-back)
+    Should be: BF_InverseDestAlpha, BF_One (back-to-front)
+    Unity ref: RenderGaussianSplats.shader:11 "Blend OneMinusDstAlpha One"
+
+[x] Issue #2: NO VIEW POSITION CLAMPING (FIXED)
+    Location: CalcViewData.usf (missing, add after line 73)
+    Problem: Jacobian terms -fx*x/z^2 explode at extreme angles
+    Unity ref: GaussianSplatting.hlsl:61-68 clamps viewPos.xy to 1.3*tanFov
+
+[x] Issue #3: AXIS SIZE TOO SMALL (FIXED)
+    Location: GaussianDataTypes.ush:251-252
+    Current:  2.0 * sqrt(lambda) with quad +-1 = 2.83 sigma coverage
+    Unity:    sqrt(2.0 * lambda) with quad +-2 = 4 sigma coverage
+    Result: UE splats 1.41x smaller, invisible when far
+
+[x] Issue #4: GAUSSIAN FALLOFF MISMATCH (FIXED)
+    Location: GaussianSplatRendering.usf:78
+    Current:  exp(-2.0 * distSq) at edge = exp(-2) = 0.135
+    Unity:    exp(-distSq) with pos+-2, at edge = exp(-4) = 0.018
+    Result: UE splats appear fatter/brighter at edges
+
+---
+
+Priority: Fix #1 and #2 first (most likely causing visible symptoms)

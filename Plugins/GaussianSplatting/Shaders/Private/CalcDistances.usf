@@ -1,5 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+//For each splat, extracts Z coordinate from ViewDataBuffer.Converts depth to sortable uint
+
 #include "/Engine/Public/Platform.ush"
 #include "/Plugin/GaussianSplatting/Private/GaussianDataTypes.ush"
 

@@ -2,11 +2,7 @@
 
 #include "GaussianSplatViewExtension.h"
 #include "GaussianSplatSceneProxy.h"
-#include "GaussianSplatRenderer.h"
-#include "RHICommandList.h"
-#include "SceneView.h"
 #include "RenderGraphBuilder.h"
-#include "RenderGraphUtils.h"
 
 FGaussianSplatViewExtension* FGaussianSplatViewExtension::Instance = nullptr;
 
@@ -55,6 +51,7 @@ void FGaussianSplatViewExtension::RegisterProxy(FGaussianSplatSceneProxy* Proxy)
 	{
 		FScopeLock Lock(&ProxyLock);
 		RegisteredProxies.AddUnique(Proxy);
+		UE_LOG(LogTemp, Warning, TEXT("GaussianSplatViewExtension::RegisterProxy - Registered proxy, total count: %d"), RegisteredProxies.Num());
 	}
 }
 
@@ -81,68 +78,11 @@ void FGaussianSplatViewExtension::PostRenderViewFamily_RenderThread(FRDGBuilder&
 
 void FGaussianSplatViewExtension::PostRenderBasePassDeferred_RenderThread(FRDGBuilder& GraphBuilder, FSceneView& InView, const FRenderTargetBindingSlots& RenderTargets, TRDGUniformBufferRef<FSceneTextureUniformParameters> SceneTextures)
 {
-	FScopeLock Lock(&ProxyLock);
-
-	if (RegisteredProxies.Num() == 0)
-	{
-		return;
-	}
-
-	// Add a pass to render Gaussian splats
-	GraphBuilder.AddPass(
-		RDG_EVENT_NAME("GaussianSplatRendering"),
-		ERDGPassFlags::Raster | ERDGPassFlags::NeverCull,
-		[this, &InView](FRHICommandListImmediate& RHICmdList)
-		{
-			RenderGaussianSplats_RenderThread(RHICmdList, InView);
-		}
-	);
+	// Rendering is handled by PostOpaqueRenderDelegate in FGaussianSplattingModule
+	// This hook is too early in the pipeline (before lighting) for Gaussian splats
 }
 
 void FGaussianSplatViewExtension::PrePostProcessPass_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& View, const FPostProcessingInputs& Inputs)
 {
 	// Rendering is done in OnPostOpaqueRender delegate instead
-}
-
-void FGaussianSplatViewExtension::RenderGaussianSplats_RenderThread(FRHICommandListImmediate& RHICmdList, const FSceneView& View)
-{
-	SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatViewExtension);
-
-	// Note: ProxyLock should already be held by caller
-
-	for (FGaussianSplatSceneProxy* Proxy : RegisteredProxies)
-	{
-		if (!Proxy)
-		{
-			continue;
-		}
-
-		FGaussianSplatGPUResources* GPUResources = Proxy->GetGPUResources();
-		if (!GPUResources || !GPUResources->IsValid())
-		{
-			continue;
-		}
-
-		// Check visibility - basic frustum check
-		const FBoxSphereBounds& Bounds = Proxy->GetBounds();
-		if (!View.ViewFrustum.IntersectBox(Bounds.Origin, Bounds.BoxExtent))
-		{
-			continue;
-		}
-
-		// Get transform
-		FMatrix LocalToWorld = Proxy->GetLocalToWorld();
-
-		// Render this proxy
-		FGaussianSplatRenderer::Render(
-			RHICmdList,
-			View,
-			GPUResources,
-			LocalToWorld,
-			Proxy->GetSplatCount(),
-			Proxy->GetSHOrder(),
-			Proxy->GetOpacityScale(),
-			Proxy->GetSplatScale()
-		);
-	}
 }

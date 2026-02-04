@@ -171,6 +171,72 @@ void UGaussianSplatAsset::CalculateBounds(const TArray<FGaussianSplatData>& InSp
 	}
 }
 
+TArray<FVector> UGaussianSplatAsset::GetDecompressedPositions() const
+{
+	TArray<FVector> Positions;
+
+	if (SplatCount == 0 || PositionData.Num() == 0)
+	{
+		return Positions;
+	}
+
+	Positions.SetNum(SplatCount);
+	const uint8* DataPtr = PositionData.GetData();
+	const int32 BytesPerSplat = GetPositionBytesPerSplat(PositionFormat);
+
+	for (int32 i = 0; i < SplatCount; i++)
+	{
+		FVector3f Position;
+
+		switch (PositionFormat)
+		{
+		case EGaussianPositionFormat::Float32:
+		{
+			const float* FloatPtr = reinterpret_cast<const float*>(DataPtr + i * BytesPerSplat);
+			Position.X = FloatPtr[0];
+			Position.Y = FloatPtr[1];
+			Position.Z = FloatPtr[2];
+			break;
+		}
+		case EGaussianPositionFormat::Norm16:
+		{
+			// Get chunk bounds for dequantization
+			const int32 ChunkIdx = i / GaussianSplattingConstants::SplatsPerChunk;
+			if (ChunkIdx < ChunkData.Num())
+			{
+				const FGaussianChunkInfo& Chunk = ChunkData[ChunkIdx];
+
+				const uint16* ShortPtr = reinterpret_cast<const uint16*>(DataPtr + i * BytesPerSplat);
+				float NormX = static_cast<float>(ShortPtr[0]) / 65535.0f;
+				float NormY = static_cast<float>(ShortPtr[1]) / 65535.0f;
+				float NormZ = static_cast<float>(ShortPtr[2]) / 65535.0f;
+
+				// Dequantize using chunk bounds
+				Position.X = Chunk.PosMinMaxX.X + NormX * (Chunk.PosMinMaxX.Y - Chunk.PosMinMaxX.X);
+				Position.Y = Chunk.PosMinMaxY.X + NormY * (Chunk.PosMinMaxY.Y - Chunk.PosMinMaxY.X);
+				Position.Z = Chunk.PosMinMaxZ.X + NormZ * (Chunk.PosMinMaxZ.Y - Chunk.PosMinMaxZ.X);
+			}
+			break;
+		}
+		case EGaussianPositionFormat::Norm11:
+		case EGaussianPositionFormat::Norm6:
+		{
+			// TODO: These formats currently fall back to Float32 in compression
+			// Once implemented, add decompression here
+			const float* FloatPtr = reinterpret_cast<const float*>(DataPtr + i * 12);
+			Position.X = FloatPtr[0];
+			Position.Y = FloatPtr[1];
+			Position.Z = FloatPtr[2];
+			break;
+		}
+		}
+
+		Positions[i] = FVector(Position);
+	}
+
+	return Positions;
+}
+
 void UGaussianSplatAsset::CalculateChunkBounds(const TArray<FGaussianSplatData>& InSplats)
 {
 	const int32 NumChunks = FMath::DivideAndRoundUp(SplatCount, GaussianSplattingConstants::SplatsPerChunk);

@@ -81,6 +81,8 @@ void FGaussianSplatGPUResources::ReleaseRHI()
 	IndexBuffer.SafeRelease();
 	ColorTexture.SafeRelease();
 	ColorTextureSRV.SafeRelease();
+	DummyWhiteTexture.SafeRelease();
+	DummyWhiteTextureSRV.SafeRelease();
 
 	bInitialized = false;
 }
@@ -274,6 +276,31 @@ void FGaussianSplatGPUResources::CreateIndexBuffer(FRHICommandListBase& RHICmdLi
 	void* Data = RHICmdList.LockBuffer(IndexBuffer, 0, Indices.Num() * sizeof(uint16), RLM_WriteOnly);
 	FMemory::Memcpy(Data, Indices.GetData(), Indices.Num() * sizeof(uint16));
 	RHICmdList.UnlockBuffer(IndexBuffer);
+
+	// Create dummy white texture for fallback when ColorTexture isn't available
+	CreateDummyWhiteTexture(RHICmdList);
+}
+
+void FGaussianSplatGPUResources::CreateDummyWhiteTexture(FRHICommandListBase& RHICmdList)
+{
+	// Create a 1x1 white texture
+	const FRHITextureCreateDesc TextureDesc =
+		FRHITextureCreateDesc::Create2D(TEXT("GaussianSplatDummyWhiteTexture"), 1, 1, PF_R8G8B8A8)
+		.SetFlags(ETextureCreateFlags::ShaderResource)
+		.SetInitialState(ERHIAccess::SRVMask);
+
+	DummyWhiteTexture = RHICreateTexture(TextureDesc);
+
+	// Fill with white color
+	uint32 WhitePixel = 0xFFFFFFFF;  // RGBA = (255, 255, 255, 255)
+	FUpdateTextureRegion2D Region(0, 0, 0, 0, 1, 1);
+	RHIUpdateTexture2D(DummyWhiteTexture, 0, Region, sizeof(uint32), (const uint8*)&WhitePixel);
+
+	// Create SRV
+	DummyWhiteTextureSRV = RHICmdList.CreateShaderResourceView(
+		DummyWhiteTexture,
+		FRHIViewDesc::CreateTextureSRV()
+			.SetDimension(ETextureDimension::Texture2D));
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -288,6 +315,10 @@ FGaussianSplatSceneProxy::FGaussianSplatSceneProxy(const UGaussianSplatComponent
 	, SplatScale(InComponent->SplatScale)
 	, bWireframe(InComponent->bWireframe)
 	, bEnableFrustumCulling(InComponent->bEnableFrustumCulling)
+	, bDebugFixedSizeQuads(InComponent->bDebugFixedSizeQuads)
+	, bDebugBypassViewData(InComponent->bDebugBypassViewData)
+	, bDebugWorldPositionTest(InComponent->bDebugWorldPositionTest)
+	, DebugQuadSize(InComponent->DebugQuadSize)
 {
 	bWillEverBeLit = false;
 }
@@ -376,6 +407,14 @@ void FGaussianSplatSceneProxy::CreateRenderThreadResources(FRHICommandListBase& 
 					FRHIViewDesc::CreateTextureSRV()
 						.SetDimension(ETextureDimension::Texture2D));
 			}
+			else
+			{
+				UE_LOG(LogTemp, Warning, TEXT("GaussianSplatSceneProxy: ColorTexture resource not ready yet"));
+			}
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("GaussianSplatSceneProxy: ColorTexture is null in asset"));
 		}
 
 		// Register with view extension for rendering
@@ -383,6 +422,11 @@ void FGaussianSplatSceneProxy::CreateRenderThreadResources(FRHICommandListBase& 
 		if (ViewExtension)
 		{
 			ViewExtension->RegisterProxy(const_cast<FGaussianSplatSceneProxy*>(this));
+			UE_LOG(LogTemp, Warning, TEXT("GaussianSplatSceneProxy: Registered with ViewExtension"));
+		}
+		else
+		{
+			UE_LOG(LogTemp, Error, TEXT("GaussianSplatSceneProxy: ViewExtension is NULL! Cannot register for rendering."));
 		}
 	}
 }
@@ -401,5 +445,31 @@ void FGaussianSplatSceneProxy::DestroyRenderThreadResources()
 		GPUResources->ReleaseResource();
 		delete GPUResources;
 		GPUResources = nullptr;
+	}
+}
+
+void FGaussianSplatSceneProxy::TryInitializeColorTexture(FRHICommandListBase& RHICmdList)
+{
+	if (!GPUResources || GPUResources->ColorTextureSRV.IsValid())
+	{
+		// Already initialized or no resources
+		return;
+	}
+
+	if (!CachedAsset || !CachedAsset->ColorTexture)
+	{
+		return;
+	}
+
+	FTextureResource* TextureResource = CachedAsset->ColorTexture->GetResource();
+	if (TextureResource && TextureResource->TextureRHI)
+	{
+		GPUResources->ColorTexture = TextureResource->TextureRHI;
+		GPUResources->ColorTextureSRV = RHICmdList.CreateShaderResourceView(
+			GPUResources->ColorTexture,
+			FRHIViewDesc::CreateTextureSRV()
+				.SetDimension(ETextureDimension::Texture2D));
+
+		UE_LOG(LogTemp, Log, TEXT("GaussianSplatSceneProxy: ColorTexture SRV initialized (deferred)"));
 	}
 }

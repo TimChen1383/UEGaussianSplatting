@@ -32,7 +32,11 @@ public:
 		int32 SplatCount,
 		int32 SHOrder,
 		float OpacityScale,
-		float SplatScale
+		float SplatScale,
+		bool bDebugFixedSizeQuads = false,
+		bool bDebugBypassViewData = false,
+		bool bDebugWorldPositionTest = false,
+		float DebugQuadSize = 0.01f
 	);
 
 	/**
@@ -46,7 +50,8 @@ public:
 		int32 SplatCount,
 		int32 SHOrder,
 		float OpacityScale,
-		float SplatScale
+		float SplatScale,
+		bool bHasColorTexture = true
 	);
 
 	/**
@@ -74,7 +79,12 @@ public:
 		FRHICommandListImmediate& RHICmdList,
 		const FSceneView& View,
 		FGaussianSplatGPUResources* GPUResources,
-		int32 SplatCount
+		int32 SplatCount,
+		bool bDebugFixedSizeQuads = false,
+		bool bDebugBypassViewData = false,
+		bool bDebugWorldPositionTest = false,
+		float DebugQuadSize = 0.01f,
+		const FMatrix* WorldToClip = nullptr
 	);
 
 private:

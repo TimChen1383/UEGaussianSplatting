@@ -1,5 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
+//Purpose: Transform 3D splat data → 2D screen-space data
+
 #include "/Plugin/GaussianSplatting/Private/GaussianSplatting.ush"
 
 // Shader parameters
@@ -23,6 +25,7 @@ float OpacityScale;
 float SplatScale;
 uint2 ColorTextureSize;
 uint PositionFormat; // 0=Float32, 1=Norm16, 2=Norm11, 3=Norm6
+uint UseDefaultColor; // 1 = use default color (no texture available), 0 = use texture
 
 [numthreads(256, 1, 1)]
 void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
@@ -47,21 +50,33 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	float4 rotation = LoadRotation(OtherDataBuffer, splatIndex);
 	float3 scale = LoadScale(OtherDataBuffer, splatIndex) * SplatScale;
 
-	// Load color and opacity from texture
-	float4 colorOpacity = LoadColor(ColorTexture, ColorSampler, splatIndex, ColorTextureSize);
+	// Load color and opacity from texture (or use default if texture not available)
+	float4 colorOpacity;
+	if (UseDefaultColor)
+	{
+		// Default: white with full opacity (debug visualization)
+		colorOpacity = float4(1.0, 1.0, 1.0, 1.0);
+	}
+	else
+	{
+		colorOpacity = LoadColor(ColorTexture, ColorSampler, splatIndex, ColorTextureSize);
+	}
 	float opacity = colorOpacity.a * OpacityScale;
 
 	// Transform to world space
-	float4 worldPos = mul(LocalToWorld, float4(localPos, 1.0));
+	// Note: UE passes matrices that work with mul(vector, matrix) for correct results
+	float4 worldPos = mul(float4(localPos, 1.0), LocalToWorld);
 
-	// Transform to view/camera space for covariance projection
-	float4 viewPos = mul(WorldToView, worldPos);
+	// DEBUG TEST: Uncomment to bypass LocalToWorld and use positions as world coordinates
+	// This helps isolate if the issue is in LocalToWorld transformation or position loading
+	//worldPos = float4(localPos, 1.0);
 
 	// Transform to clip space
-	float4 clipPos = mul(WorldToClip, worldPos);
+	float4 clipPos = mul(worldPos, WorldToClip);
 
-	// Cull if behind camera (use view space Z for proper culling)
-	if (viewPos.z <= 0.1)  // Small epsilon for near plane
+	// Cull if behind camera (clip space w <= 0 means behind or at camera plane)
+	// This is more reliable than checking view space Z which varies by convention
+	if (clipPos.w <= 0.0)
 	{
 		FGaussianSplatViewData viewData;
 		viewData.ClipPosition = float4(0, 0, 0, -1); // Mark invalid
@@ -73,14 +88,27 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		return;
 	}
 
+	// Transform to view/camera space for covariance projection
+	float4 viewPos = mul(worldPos, WorldToView);
+
+	// Clamp view position to prevent extreme projections at edge of view (from Unity)
+	// Without this, Jacobian terms -fx*x/z^2 explode at extreme angles causing giant splats
+	float tanFovX = (ScreenSize.x * 0.5) / FocalLength.x;
+	float tanFovY = (ScreenSize.y * 0.5) / FocalLength.y;
+	float limX = 1.3 * tanFovX;
+	float limY = 1.3 * tanFovY;
+	viewPos.x = clamp(viewPos.x / viewPos.z, -limX, limX) * viewPos.z;
+	viewPos.y = clamp(viewPos.y / viewPos.z, -limY, limY) * viewPos.z;
+
 	// Calculate 3D covariance from rotation and scale (in local space)
 	float3x3 cov3D_local = CalcCovariance3D(rotation, scale);
 
 	// Transform covariance from local space to world space
 	// cov_world = R_local * cov_local * R_local^T
 	// where R_local is the rotation part of LocalToWorld
+	// For row-major matrices: mul(transpose(R), mul(cov, R)) = R * cov * R^T
 	float3x3 localToWorldRot = (float3x3)LocalToWorld;
-	float3x3 cov3D_world = mul(localToWorldRot, mul(cov3D_local, transpose(localToWorldRot)));
+	float3x3 cov3D_world = mul(transpose(localToWorldRot), mul(cov3D_local, localToWorldRot));
 
 	// Get view matrix (upper 3x3)
 	float3x3 viewMat = (float3x3)WorldToView;
@@ -93,8 +121,21 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	DecomposeCovariance2D(cov2D, axis1, axis2);
 
 	// Convert axes to NDC space
-	axis1 = axis1 / ScreenSize * 2.0;
-	axis2 = axis2 / ScreenSize * 2.0;
+	// Unity uses quadPos ±2 and multiplies by 2/ScreenParams, giving total factor of 4
+	// We use corner ±1, so we need factor of 4 to match: axis_ndc = axis_pixels * 4 / ScreenSize
+	axis1 = axis1 / ScreenSize * 4.0;
+	axis2 = axis2 / ScreenSize * 4.0;
+
+	// Safety check: clamp axes to reasonable NDC range and handle NaN/Inf
+	float maxAxisSize = 2.0;  // Max splat size in NDC (covers full screen)
+	if (any(isnan(axis1)) || any(isinf(axis1)) || length(axis1) > maxAxisSize)
+	{
+		axis1 = float2(0.01, 0.0);  // Fallback to small fixed size
+	}
+	if (any(isnan(axis2)) || any(isinf(axis2)) || length(axis2) > maxAxisSize)
+	{
+		axis2 = float2(0.0, 0.01);  // Fallback to small fixed size
+	}
 
 	// Calculate view direction for SH
 	float3 viewDir = normalize(worldPos.xyz - CameraPosition);
@@ -105,7 +146,12 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 
 	// Evaluate spherical harmonics for view-dependent color
 	float3 shColor;
-	if (SHOrder > 0)
+	if (UseDefaultColor)
+	{
+		// Default color mode: use white (for debug visualization)
+		shColor = float3(1.0, 1.0, 1.0);
+	}
+	else if (SHOrder > 0)
 	{
 		float3 sh[15];
 		LoadSH(SHBuffer, splatIndex, 15, sh);
@@ -122,6 +168,10 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 
 	// Clamp color
 	float3 finalColor = max(shColor, 0.0);
+
+	// DEBUG: Visualize local position as color to verify position data is correct
+	// Scale assumes positions are in meters (0-3 range)
+	finalColor = saturate(localPos / 5.0 + 0.5);
 
 	// Pack and store view data
 	FGaussianSplatViewData viewData;

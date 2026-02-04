@@ -8,8 +8,9 @@
 class FGaussianSplatSceneProxy;
 
 /**
- * Scene View Extension for Gaussian Splatting rendering
- * Hooks into the rendering pipeline to render all visible Gaussian Splat primitives
+ * Scene View Extension for Gaussian Splatting
+ * Manages registration of Gaussian Splat scene proxies.
+ * Actual rendering is handled by PostOpaqueRenderDelegate in FGaussianSplattingModule.
  */
 class GAUSSIANSPLATTING_API FGaussianSplatViewExtension : public FSceneViewExtensionBase
 {
@@ -47,10 +48,6 @@ public:
 
 	/** Get proxy lock for thread-safe access */
 	FCriticalSection& GetProxyLock() const { return ProxyLock; }
-
-private:
-	/** Render all registered proxies */
-	void RenderGaussianSplats_RenderThread(FRHICommandListImmediate& RHICmdList, const FSceneView& View);
 
 private:
 	/** Registered scene proxies */
