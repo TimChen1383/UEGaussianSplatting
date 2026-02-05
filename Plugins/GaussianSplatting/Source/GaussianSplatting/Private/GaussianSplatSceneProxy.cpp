@@ -323,15 +323,14 @@ void FGaussianSplatGPUResources::CreateDebugPositionBuffer(FRHICommandListBase& 
 	const int32 DebugSplatCount = 7;
 
 	// Position buffer: 3 floats * 4 bytes = 12 bytes per splat
-	// Using 1 unit spacing (Unreal units = cm, so 1 = 1cm)
 	TArray<FVector3f> DebugPositions;
 	DebugPositions.Add(FVector3f(0.0f, 0.0f, 0.0f));      // Origin - WHITE
-	DebugPositions.Add(FVector3f(1.0f, 0.0f, 0.0f));      // +X - RED
-	DebugPositions.Add(FVector3f(-1.0f, 0.0f, 0.0f));     // -X - DARK RED
-	DebugPositions.Add(FVector3f(0.0f, 1.0f, 0.0f));      // +Y - GREEN
-	DebugPositions.Add(FVector3f(0.0f, -1.0f, 0.0f));     // -Y - DARK GREEN
-	DebugPositions.Add(FVector3f(0.0f, 0.0f, 1.0f));      // +Z - BLUE
-	DebugPositions.Add(FVector3f(0.0f, 0.0f, -1.0f));     // -Z - DARK BLUE
+	DebugPositions.Add(FVector3f(100.0f, 0.0f, 0.0f));    // +X - RED
+	DebugPositions.Add(FVector3f(-100.0f, 0.0f, 0.0f));   // -X - DARK RED
+	DebugPositions.Add(FVector3f(0.0f, 100.0f, 0.0f));    // +Y - GREEN
+	DebugPositions.Add(FVector3f(0.0f, -100.0f, 0.0f));   // -Y - DARK GREEN
+	DebugPositions.Add(FVector3f(0.0f, 0.0f, 100.0f));    // +Z - BLUE
+	DebugPositions.Add(FVector3f(0.0f, 0.0f, -100.0f));   // -Z - DARK BLUE
 
 	// Create position buffer
 	{

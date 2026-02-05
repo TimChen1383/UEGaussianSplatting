@@ -166,12 +166,18 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		shColor = colorOpacity.rgb;
 	}
 
-	// Clamp color
+	// Clamp color to valid range
 	float3 finalColor = max(shColor, 0.0);
 
-	// DEBUG: Visualize local position as color to verify position data is correct
-	// Scale assumes positions are in meters (0-3 range)
-	finalColor = saturate(localPos / 5.0 + 0.5);
+	// DEBUG: Use bright colors with full opacity to test if axes are working
+	// Comment this block once axes are verified
+	float normalizedIndex = float(splatIndex) / float(max(SplatCount, 1));
+	finalColor = float3(
+		frac(normalizedIndex * 7.0),  // R: cycling pattern
+		1.0 - normalizedIndex,         // G: gradient
+		normalizedIndex                // B: gradient
+	);
+	opacity = 1.0;  // Full opacity for debugging
 
 	// Pack and store view data
 	FGaussianSplatViewData viewData;
