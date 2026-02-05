@@ -55,6 +55,19 @@ public:
 	);
 
 	/**
+	 * Dispatch the view data calculation compute shader using DEBUG position buffer
+	 * Used for testing the full CPU→GPU pipeline with known test positions
+	 */
+	static void DispatchCalcViewDataDebug(
+		FRHICommandListImmediate& RHICmdList,
+		const FSceneView& View,
+		FGaussianSplatGPUResources* GPUResources,
+		const FMatrix& LocalToWorld,
+		int32 DebugSplatCount,
+		float SplatScale
+	);
+
+	/**
 	 * Dispatch the distance calculation compute shader
 	 */
 	static void DispatchCalcDistances(

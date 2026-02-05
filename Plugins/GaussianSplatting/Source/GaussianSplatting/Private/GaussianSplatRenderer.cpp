@@ -59,13 +59,31 @@ void FGaussianSplatRenderer::Render(
 		return;
 	}
 
-	// Debug world position test mode: render quads at known world positions
+	// Debug world position test mode: run FULL PIPELINE with debug position data
+	// This tests the same CPU→GPU data path as real PLY data
 	if (bDebugWorldPositionTest)
 	{
+		if (!GPUResources || !GPUResources->HasDebugBuffers())
+		{
+			UE_LOG(LogTemp, Warning, TEXT("Debug world position test: no debug buffers available"));
+			return;
+		}
+
 		SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatDebugWorldPos);
-		// Pass the WorldToClip matrix for transforming test positions
-		FMatrix WorldToClip = View.ViewMatrices.GetViewProjectionMatrix();
-		DrawSplats(RHICmdList, View, GPUResources, 7, false, false, true, DebugQuadSize, &WorldToClip);
+
+		const int32 DebugSplatCount = 7;
+
+		// Step 1: Calculate view data using DEBUG position buffer (not real PLY data)
+		DispatchCalcViewDataDebug(RHICmdList, View, GPUResources, LocalToWorld, DebugSplatCount, SplatScale);
+
+		// Step 2: Calculate sort distances
+		DispatchCalcDistances(RHICmdList, GPUResources, DebugSplatCount);
+
+		// Step 3: Sort splats back-to-front
+		DispatchSort(RHICmdList, GPUResources, DebugSplatCount);
+
+		// Step 4: Draw the splats using DebugMode 1 (fixed size quads from ViewDataBuffer)
+		DrawSplats(RHICmdList, View, GPUResources, DebugSplatCount, true, false, false, DebugQuadSize, nullptr);
 		return;
 	}
 
@@ -172,12 +190,91 @@ void FGaussianSplatRenderer::DispatchCalcViewData(
 	Parameters.SplatScale = SplatScale;
 	Parameters.ColorTextureSize = FIntPoint(GaussianSplattingConstants::ColorTextureWidth,
 		FMath::DivideAndRoundUp(SplatCount, GaussianSplattingConstants::ColorTextureWidth));
-	Parameters.PositionFormat = 0; // Float32 for now
+	Parameters.PositionFormat = GPUResources->GetPositionFormatUint();  // Use actual format from asset
 	Parameters.UseDefaultColor = bHasColorTexture ? 0 : 1;  // Use default color if no texture
+
+	// Log position format for debugging (only occasionally to avoid spam)
+	static int32 LogCounter = 0;
+	if (LogCounter++ % 300 == 0)
+	{
+		UE_LOG(LogTemp, Log, TEXT("CalcViewData: PositionFormat=%d (0=Float32, 1=Norm16)"), Parameters.PositionFormat);
+	}
 
 	// Dispatch compute shader
 	const uint32 ThreadGroupSize = 256;
 	const uint32 NumGroups = FMath::DivideAndRoundUp((uint32)SplatCount, ThreadGroupSize);
+
+	SetComputePipelineState(RHICmdList, ComputeShader.GetComputeShader());
+	SetShaderParameters(RHICmdList, ComputeShader, ComputeShader.GetComputeShader(), Parameters);
+	RHICmdList.DispatchComputeShader(NumGroups, 1, 1);
+	UnsetShaderUAVs(RHICmdList, ComputeShader, ComputeShader.GetComputeShader());
+
+	// Transition buffer for next stage
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->ViewDataBuffer, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
+}
+
+void FGaussianSplatRenderer::DispatchCalcViewDataDebug(
+	FRHICommandListImmediate& RHICmdList,
+	const FSceneView& View,
+	FGaussianSplatGPUResources* GPUResources,
+	const FMatrix& LocalToWorld,
+	int32 DebugSplatCount,
+	float SplatScale)
+{
+	SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatCalcViewDataDebug);
+
+	TShaderMapRef<FGaussianSplatCalcViewDataCS> ComputeShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+
+	if (!ComputeShader.IsValid())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FGaussianSplatCalcViewDataCS shader not valid"));
+		return;
+	}
+
+	// Transition buffers for compute
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->ViewDataBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+
+	FGaussianSplatCalcViewDataCS::FParameters Parameters;
+
+	// Use DEBUG buffers instead of real PLY data buffers
+	Parameters.PositionBuffer = GPUResources->DebugPositionBufferSRV;
+	Parameters.OtherDataBuffer = GPUResources->DebugOtherDataBufferSRV;
+
+	// These are not used for debug mode, but shader requires them - use real or dummy
+	Parameters.SHBuffer = GPUResources->SHBufferSRV.IsValid() ? GPUResources->SHBufferSRV : GPUResources->DebugOtherDataBufferSRV;
+	Parameters.ChunkBuffer = GPUResources->ChunkBufferSRV;
+	Parameters.ColorTexture = GPUResources->GetColorTextureSRVOrDummy();
+	Parameters.ColorSampler = TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
+	Parameters.ViewDataBuffer = GPUResources->ViewDataBufferUAV;
+
+	// Matrices
+	Parameters.LocalToWorld = FMatrix44f(LocalToWorld);
+	Parameters.WorldToClip = FMatrix44f(View.ViewMatrices.GetViewProjectionMatrix());
+	Parameters.WorldToView = FMatrix44f(View.ViewMatrices.GetViewMatrix());
+	Parameters.CameraPosition = FVector3f(View.ViewMatrices.GetViewOrigin());
+
+	// Screen info
+	FIntRect ViewRect = View.UnscaledViewRect;
+	Parameters.ScreenSize = FVector2f(ViewRect.Width(), ViewRect.Height());
+
+	// Focal length approximation from projection matrix
+	const FMatrix& ProjMatrix = View.ViewMatrices.GetProjectionMatrix();
+	Parameters.FocalLength = FVector2f(
+		ProjMatrix.M[0][0] * ViewRect.Width() * 0.5f,
+		ProjMatrix.M[1][1] * ViewRect.Height() * 0.5f
+	);
+
+	Parameters.SplatCount = DebugSplatCount;
+	Parameters.SHOrder = 0;  // No SH for debug
+	Parameters.OpacityScale = 1.0f;
+	Parameters.SplatScale = SplatScale;
+	Parameters.ColorTextureSize = FIntPoint(1, 1);  // Dummy
+	Parameters.PositionFormat = 0;  // Float32 format for debug buffer
+	Parameters.UseDefaultColor = 1;  // Use default white color
+
+	// Dispatch compute shader
+	const uint32 ThreadGroupSize = 256;
+	const uint32 NumGroups = FMath::DivideAndRoundUp((uint32)DebugSplatCount, ThreadGroupSize);
 
 	SetComputePipelineState(RHICmdList, ComputeShader.GetComputeShader());
 	SetShaderParameters(RHICmdList, ComputeShader, ComputeShader.GetComputeShader(), Parameters);

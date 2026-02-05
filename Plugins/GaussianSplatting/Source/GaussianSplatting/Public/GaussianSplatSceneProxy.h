@@ -82,11 +82,28 @@ public:
 	FTextureRHIRef DummyWhiteTexture;
 	FShaderResourceViewRHIRef DummyWhiteTextureSRV;
 
+	/** Debug position buffer for world position test */
+	FBufferRHIRef DebugPositionBuffer;
+	FShaderResourceViewRHIRef DebugPositionBufferSRV;
+
+	/** Debug "other data" buffer (rotation + scale) for world position test */
+	FBufferRHIRef DebugOtherDataBuffer;
+	FShaderResourceViewRHIRef DebugOtherDataBufferSRV;
+
 	/** Get a valid ColorTexture SRV (returns dummy if real one not available) */
 	FShaderResourceViewRHIRef GetColorTextureSRVOrDummy() const
 	{
 		return ColorTextureSRV.IsValid() ? ColorTextureSRV : DummyWhiteTextureSRV;
 	}
+
+	/** Check if debug buffers are valid */
+	bool HasDebugBuffers() const { return DebugPositionBufferSRV.IsValid() && DebugOtherDataBufferSRV.IsValid(); }
+
+	/** Position format used by this asset (Float32, Norm16, etc.) */
+	EGaussianPositionFormat PositionFormat = EGaussianPositionFormat::Float32;
+
+	/** Get position format as uint for shader */
+	uint32 GetPositionFormatUint() const { return static_cast<uint32>(PositionFormat); }
 
 private:
 	/** Create static buffers from asset data */
@@ -100,6 +117,9 @@ private:
 
 	/** Create dummy white texture for fallback */
 	void CreateDummyWhiteTexture(FRHICommandListBase& RHICmdList);
+
+	/** Create debug position buffer for world position test */
+	void CreateDebugPositionBuffer(FRHICommandListBase& RHICmdList);
 
 private:
 	/** Cached asset data for initialization */

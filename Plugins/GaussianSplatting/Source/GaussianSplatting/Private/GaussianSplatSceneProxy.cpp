@@ -30,6 +30,12 @@ void FGaussianSplatGPUResources::Initialize(UGaussianSplatAsset* Asset)
 
 	SplatCount = Asset->GetSplatCount();
 
+	// Store the position format from the asset (critical for shader to read correctly)
+	PositionFormat = Asset->PositionFormat;
+
+	UE_LOG(LogTemp, Log, TEXT("GaussianSplatGPUResources::Initialize - PositionFormat: %d (0=Float32, 1=Norm16)"),
+		static_cast<int32>(PositionFormat));
+
 	// Cache data for RHI initialization
 	CachedPositionData = Asset->PositionData;
 	CachedOtherData = Asset->OtherData;
@@ -83,6 +89,10 @@ void FGaussianSplatGPUResources::ReleaseRHI()
 	ColorTextureSRV.SafeRelease();
 	DummyWhiteTexture.SafeRelease();
 	DummyWhiteTextureSRV.SafeRelease();
+	DebugPositionBuffer.SafeRelease();
+	DebugPositionBufferSRV.SafeRelease();
+	DebugOtherDataBuffer.SafeRelease();
+	DebugOtherDataBufferSRV.SafeRelease();
 
 	bInitialized = false;
 }
@@ -279,6 +289,9 @@ void FGaussianSplatGPUResources::CreateIndexBuffer(FRHICommandListBase& RHICmdLi
 
 	// Create dummy white texture for fallback when ColorTexture isn't available
 	CreateDummyWhiteTexture(RHICmdList);
+
+	// Create debug position buffer for world position test mode
+	CreateDebugPositionBuffer(RHICmdList);
 }
 
 void FGaussianSplatGPUResources::CreateDummyWhiteTexture(FRHICommandListBase& RHICmdList)
@@ -301,6 +314,85 @@ void FGaussianSplatGPUResources::CreateDummyWhiteTexture(FRHICommandListBase& RH
 		DummyWhiteTexture,
 		FRHIViewDesc::CreateTextureSRV()
 			.SetDimension(ETextureDimension::Texture2D));
+}
+
+void FGaussianSplatGPUResources::CreateDebugPositionBuffer(FRHICommandListBase& RHICmdList)
+{
+	// Define 7 test positions in local/world space
+	// These match the hardcoded values that were in the shader before
+	const int32 DebugSplatCount = 7;
+
+	// Position buffer: 3 floats * 4 bytes = 12 bytes per splat
+	// Using 1 unit spacing (Unreal units = cm, so 1 = 1cm)
+	TArray<FVector3f> DebugPositions;
+	DebugPositions.Add(FVector3f(0.0f, 0.0f, 0.0f));      // Origin - WHITE
+	DebugPositions.Add(FVector3f(1.0f, 0.0f, 0.0f));      // +X - RED
+	DebugPositions.Add(FVector3f(-1.0f, 0.0f, 0.0f));     // -X - DARK RED
+	DebugPositions.Add(FVector3f(0.0f, 1.0f, 0.0f));      // +Y - GREEN
+	DebugPositions.Add(FVector3f(0.0f, -1.0f, 0.0f));     // -Y - DARK GREEN
+	DebugPositions.Add(FVector3f(0.0f, 0.0f, 1.0f));      // +Z - BLUE
+	DebugPositions.Add(FVector3f(0.0f, 0.0f, -1.0f));     // -Z - DARK BLUE
+
+	// Create position buffer
+	{
+		const uint32 BufferSize = DebugSplatCount * sizeof(FVector3f);
+		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
+			TEXT("GaussianDebugPositionBuffer"),
+			BufferSize,
+			0,
+			BUF_Static | BUF_ShaderResource | BUF_ByteAddressBuffer)
+			.SetInitialState(ERHIAccess::SRVMask);
+		DebugPositionBuffer = RHICmdList.CreateBuffer(Desc);
+
+		void* Data = RHICmdList.LockBuffer(DebugPositionBuffer, 0, BufferSize, RLM_WriteOnly);
+		FMemory::Memcpy(Data, DebugPositions.GetData(), BufferSize);
+		RHICmdList.UnlockBuffer(DebugPositionBuffer);
+
+		DebugPositionBufferSRV = RHICmdList.CreateShaderResourceView(
+			DebugPositionBuffer, FRHIViewDesc::CreateBufferSRV()
+				.SetType(FRHIViewDesc::EBufferType::Raw));
+	}
+
+	// Create "other data" buffer (rotation + scale)
+	// OtherData layout: 4 floats rotation (quaternion) + 3 floats scale = 28 bytes per splat
+	// Using raw floats to ensure exact binary layout matching shader expectations
+	{
+		// 7 floats per splat: rotation (x,y,z,w) + scale (x,y,z)
+		TArray<float> DebugOtherData;
+		DebugOtherData.Reserve(DebugSplatCount * 7);
+
+		for (int32 i = 0; i < DebugSplatCount; ++i)
+		{
+			// Identity quaternion: (x=0, y=0, z=0, w=1)
+			DebugOtherData.Add(0.0f);  // Rotation X
+			DebugOtherData.Add(0.0f);  // Rotation Y
+			DebugOtherData.Add(0.0f);  // Rotation Z
+			DebugOtherData.Add(1.0f);  // Rotation W
+			// Unit scale
+			DebugOtherData.Add(1.0f);  // Scale X
+			DebugOtherData.Add(1.0f);  // Scale Y
+			DebugOtherData.Add(1.0f);  // Scale Z
+		}
+
+		const uint32 BufferSize = DebugOtherData.Num() * sizeof(float);  // 7 floats * 4 bytes * 7 splats = 196 bytes
+		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
+			TEXT("GaussianDebugOtherDataBuffer"),
+			BufferSize,
+			0,
+			BUF_Static | BUF_ShaderResource | BUF_ByteAddressBuffer)
+			.SetInitialState(ERHIAccess::SRVMask);
+		DebugOtherDataBuffer = RHICmdList.CreateBuffer(Desc);
+
+		void* Data = RHICmdList.LockBuffer(DebugOtherDataBuffer, 0, BufferSize, RLM_WriteOnly);
+		FMemory::Memcpy(Data, DebugOtherData.GetData(), BufferSize);
+		RHICmdList.UnlockBuffer(DebugOtherDataBuffer);
+
+		DebugOtherDataBufferSRV = RHICmdList.CreateShaderResourceView(
+			DebugOtherDataBuffer, FRHIViewDesc::CreateBufferSRV()
+				.SetType(FRHIViewDesc::EBufferType::Raw));
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("Created debug position buffer with %d test splats"), DebugSplatCount);
 }
 
 //////////////////////////////////////////////////////////////////////////
