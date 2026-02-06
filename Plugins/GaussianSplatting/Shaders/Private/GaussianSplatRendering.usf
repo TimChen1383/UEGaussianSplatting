@@ -225,21 +225,22 @@ float4 MainPS(FVertexOutput Input) : SV_Target
 	// Normal mode: Gaussian falloff matching Unity's implementation
 	// Unity uses exp(-dot(pos,pos)) where pos goes to ±2 at edges
 	// Our LocalPos goes to ±1 at edges, so we use exp(-4*distSq) to match
-	// At edge (1,0): exp(-4) ≈ 0.018, matching Unity's exp(-4) at (2,0)
+	// At corner (1,1): distSq=2, exp(-8) ≈ 0.00034, matching Unity's exp(-8) at (2,2)
 	float distSq = dot(Input.LocalPos, Input.LocalPos);
 
 	// Gaussian weight matching Unity's falloff
 	float gaussianWeight = exp(-4.0 * distSq);
 
-	// Apply Gaussian to alpha
+	// Apply Gaussian to alpha (saturate to match Unity's behavior)
 	float4 color = Input.Color;
-	color.a *= gaussianWeight;
+	color.a = saturate(gaussianWeight * color.a);
 
 	// Premultiplied alpha
 	color.rgb *= color.a;
 
 	// Discard nearly transparent pixels for efficiency
-	if (color.a < 0.003)
+	// Match Unity's threshold: 1/255 ≈ 0.00392
+	if (color.a < 1.0/255.0)
 	{
 		discard;
 	}

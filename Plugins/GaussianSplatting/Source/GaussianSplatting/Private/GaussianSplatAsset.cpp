@@ -302,13 +302,15 @@ void UGaussianSplatAsset::CreateColorTextureData(const TArray<FGaussianSplatData
 		if (TexY < ColorTextureHeight)
 		{
 			// Convert SH DC to color
+			// IMPORTANT: Do NOT clamp RGB - SH coefficients can produce values outside [0,1]
+			// Float16 texture format can store HDR values, clamping would cause color errors
 			FVector3f Color = GaussianSplattingUtils::SHDCToColor(Splat.SH_DC);
 
 			FFloat16Color& Pixel = PixelData[TexY * ColorTextureWidth + TexX];
-			Pixel.R = FFloat16(FMath::Clamp(Color.X, 0.0f, 1.0f));
-			Pixel.G = FFloat16(FMath::Clamp(Color.Y, 0.0f, 1.0f));
-			Pixel.B = FFloat16(FMath::Clamp(Color.Z, 0.0f, 1.0f));
-			Pixel.A = FFloat16(FMath::Clamp(Splat.Opacity, 0.0f, 1.0f));
+			Pixel.R = FFloat16(Color.X);  // No clamping - allow HDR values
+			Pixel.G = FFloat16(Color.Y);
+			Pixel.B = FFloat16(Color.Z);
+			Pixel.A = FFloat16(FMath::Clamp(Splat.Opacity, 0.0f, 1.0f));  // Opacity is always [0,1]
 		}
 	}
 

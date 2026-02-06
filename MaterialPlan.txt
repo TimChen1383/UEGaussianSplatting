@@ -1,0 +1,147 @@
+# Plan: Material-Based Rendering for Gaussian Splatting
+
+## Goal
+Allow users to customize Gaussian Splat rendering via UE Materials, with a working default material provided by the plugin.
+
+## Current State
+- Uses custom global shaders (no UMaterial involvement)
+- Colors flow: ColorTexture -> ComputeShader -> ViewDataBuffer -> VertexShader -> PixelShader
+- Hardcoded blend mode: OneMinusDstAlpha, One
+- No material customization possible
+
+## Proposed Solution
+Create a Custom Vertex Factory that reads from ViewDataBuffer and exposes data to UE's material system:
+- VertexColor (RGBA from SH evaluation)
+- TexCoord0 (LocalPos for Gaussian falloff)
+- WorldPosition (quad corners)
+
+--------------------------------------------------------------------------------
+
+## Implementation Steps
+
+### Phase 1: Add Material Property to Component
+
+File: GaussianSplatComponent.h
+```cpp
+/** Override material for custom rendering (optional) */
+UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaussian Splatting|Rendering")
+TObjectPtr<UMaterialInterface> OverrideMaterial;
+```
+
+File: GaussianSplatComponent.cpp
+- Implement GetUsedMaterials() to return OverrideMaterial or default material
+
+### Phase 2: Create Custom Vertex Factory
+
+New Files:
+1. GaussianSplatVertexFactory.h - Vertex factory class declaration
+2. GaussianSplatVertexFactory.cpp - Vertex factory implementation
+3. GaussianSplatVertexFactory.ush - Shader interface that reads ViewDataBuffer
+
+Key Data Exposed to Material:
++-------------------+------------------------+---------------------------+
+| Attribute         | Source                 | Purpose                   |
++-------------------+------------------------+---------------------------+
+| VertexColor.RGB   | ViewData.PackedColor   | Base color from SH        |
+| VertexColor.A     | ViewData.PackedColor   | Opacity                   |
+| TexCoord0         | LocalPos [-1,1]->[0,1] | For Gaussian falloff      |
++-------------------+------------------------+---------------------------+
+
+### Phase 3: Modify Scene Proxy for Material Rendering
+
+File: GaussianSplatSceneProxy.cpp
+- Create FGaussianSplatVertexFactory instance
+- Override GetDynamicMeshElements() to use FMeshBatch with material
+- Keep existing compute pipeline (CalcViewData, Sort) unchanged
+
+### Phase 4: Create Default Material
+
+New Content:
+- Content/Materials/M_GaussianSplat_Default.uasset - Default Unlit translucent material
+- Content/Materials/MF_GaussianFalloff.uasset - Material function for Gaussian falloff
+
+Default Material Graph:
+```
+TexCoord0 -> Remap [0,1] to [-1,1] -> distSq = dot(pos,pos) -> exp(-4*distSq)
+                                                                    |
+                                                                    v
+VertexColor.RGB -------------------------------------------------> Emissive
+VertexColor.A ---------------> Multiply by GaussianWeight -------> Opacity
+```
+
+Material Settings:
+- Blend Mode: Translucent
+- Shading Model: Unlit
+- Two Sided: True
+
+### Phase 5: Handle Blend Mode (Intermediate RT + Composite)
+
+Challenge: Gaussian splatting requires OneMinusDstAlpha, One blending (back-to-front accumulation).
+
+Solution: Use intermediate render target approach:
+1. Create intermediate RGBA16F render target at scene resolution
+2. Clear to (0,0,0,0) - fully transparent
+3. Render splats to RT using standard premultiplied alpha blend (One, OneMinusSrcAlpha)
+4. Composite RT to scene color using custom blend: OneMinusSrcAlpha, One (or post-process pass)
+
+This ensures correct visual output matching the current implementation.
+
+--------------------------------------------------------------------------------
+
+## Files to Create
+
++--------------------------------------------------------------+-------------------------------------------+
+| File                                                         | Purpose                                   |
++--------------------------------------------------------------+-------------------------------------------+
+| Source/GaussianSplatting/Public/GaussianSplatVertexFactory.h | Vertex factory declaration                |
+| Source/GaussianSplatting/Private/GaussianSplatVertexFactory.cpp | Vertex factory implementation          |
+| Shaders/Private/GaussianSplatVertexFactory.ush               | Shader interface for material system      |
+| Shaders/Private/GaussianSplatComposite.usf                   | Composite pass shader for final blend     |
+| Content/Materials/M_GaussianSplat_Default.uasset             | Default Unlit translucent material        |
+| Content/Materials/MF_GaussianFalloff.uasset                  | Reusable Gaussian falloff function        |
++--------------------------------------------------------------+-------------------------------------------+
+
+## Files to Modify
+
++------------------------------+-----------------------------------------------+
+| File                         | Changes                                       |
++------------------------------+-----------------------------------------------+
+| GaussianSplatComponent.h     | Add OverrideMaterial property                 |
+| GaussianSplatComponent.cpp   | Implement GetUsedMaterials()                  |
+| GaussianSplatSceneProxy.h    | Add vertex factory member                     |
+| GaussianSplatSceneProxy.cpp  | Use FMeshBatch with material                  |
+| GaussianSplatting.Build.cs   | Add shader directory for new .ush             |
++------------------------------+-----------------------------------------------+
+
+## Key Data Structures (Reference)
+
+FGaussianSplatViewData (from GaussianDataTypes.ush:13-20):
+```cpp
+struct FGaussianSplatViewData {
+    float4 ClipPosition;    // Clip space position
+    uint PackedColorRG;     // Half-float R,G
+    uint PackedColorBA;     // Half-float B,A (opacity)
+    float2 Axis1;           // Covariance axis 1
+    float2 Axis2;           // Covariance axis 2
+};
+```
+
+--------------------------------------------------------------------------------
+
+## Verification Plan
+
+1. Material loads correctly: Check default material renders white splats
+2. VertexColor works: Assign material that outputs VertexColor, verify colors match
+3. TexCoord0 works: Test Gaussian falloff with material's TexCoord node
+4. Custom material works: Assign user material, verify it overrides default
+5. Blend mode correct: Compare visual output with current (custom shader) output
+
+--------------------------------------------------------------------------------
+
+## Backward Compatibility
+
+Keep existing global shader path (GaussianSplatRendering.usf) for:
+- Debug modes: bDebugFixedSizeQuads, bDebugBypassViewData, bDebugWorldPositionTest
+- Fallback: When default material not found (error case)
+
+Normal rendering uses material system, debug modes stay with custom shaders for simplicity.
