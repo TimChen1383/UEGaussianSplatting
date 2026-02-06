@@ -87,7 +87,7 @@ public:
 	bool bShowDebugPoints = false;
 
 	/** Size of debug point cubes in world units */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaussian Splatting|Debug", meta = (ClampMin = "0.1", ClampMax = "100.0", EditCondition = "bShowDebugPoints"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Gaussian Splatting|Debug", meta = (ClampMin = "0.01", ClampMax = "100.0", EditCondition = "bShowDebugPoints"))
 	float DebugPointSize = 1.0f;
 
 	/** Maximum number of debug points to display (for performance). Set to 0 for all points. */

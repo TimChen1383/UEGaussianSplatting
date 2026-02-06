@@ -261,18 +261,20 @@ bool FPLYFileReader::ReadVertexData(const TArray<uint8>& FileData, const FPLYHea
 		Splat.Position.Z = PlyY;   // PLY Y -> UE Z (up)
 
 		// Rotation (quaternion) - Convert coordinate system
-		// PLY uses (w, x, y, z) format with Y-up
+		// PLY uses (w, x, y, z) format with Y-up coordinate system
+		// UE uses Z-up: PLY_X->UE_Y, PLY_Y->UE_Z, PLY_Z->UE_X
 		float QW = GetPropertyFloat(VertexData, Header, TEXT("rot_0"));
 		float QX = GetPropertyFloat(VertexData, Header, TEXT("rot_1"));
 		float QY = GetPropertyFloat(VertexData, Header, TEXT("rot_2"));
 		float QZ = GetPropertyFloat(VertexData, Header, TEXT("rot_3"));
-		// Convert quaternion from Y-up to Z-up
+		// Quaternion axis components transform like vectors
 		Splat.Rotation.W = QW;
 		Splat.Rotation.X = QZ;   // PLY Z -> UE X
 		Splat.Rotation.Y = QX;   // PLY X -> UE Y
 		Splat.Rotation.Z = QY;   // PLY Y -> UE Z
 
 		// Scale - Reorder to match coordinate system conversion
+		// Scale axes must match the rotation axis mapping
 		float ScaleX = GetPropertyFloat(VertexData, Header, TEXT("scale_0"));
 		float ScaleY = GetPropertyFloat(VertexData, Header, TEXT("scale_1"));
 		float ScaleZ = GetPropertyFloat(VertexData, Header, TEXT("scale_2"));

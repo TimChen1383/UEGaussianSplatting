@@ -100,7 +100,8 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	viewPos.x = clamp(viewPos.x / viewPos.z, -limX, limX) * viewPos.z;
 	viewPos.y = clamp(viewPos.y / viewPos.z, -limY, limY) * viewPos.z;
 
-	// Calculate 3D covariance from rotation and scale (in local space)
+	// Calculate 3D covariance from rotation and scale
+	// Rotation and scale were already converted to UE coordinate system at import time
 	float3x3 cov3D_local = CalcCovariance3D(rotation, scale);
 
 	// Transform covariance from local space to world space
@@ -156,9 +157,16 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		float3 sh[15];
 		LoadSH(SHBuffer, splatIndex, 15, sh);
 
-		// SH DC is stored in color texture, higher bands in SH buffer
+		// Unity negates the view direction for SH evaluation
+		float3 shDir = -viewDir_3DGS;
+
+		// SH DC is stored in color texture as: color = 0.5 + SH_C0 * DC
+		// Convert back to raw SH DC coefficient
 		float3 shDC = (colorOpacity.rgb - 0.5) / SH_C0;
-		shColor = EvaluateSH(viewDir_3DGS, shDC, sh, SHOrder);
+
+		// EvaluateSH computes: SH_C0 * DC + higher_order_terms = (color - 0.5) + higher_order_terms
+		// Add 0.5 back to get proper color range (matching Unity's approach)
+		shColor = EvaluateSH(shDir, shDC, sh, SHOrder) + 0.5;
 	}
 	else
 	{

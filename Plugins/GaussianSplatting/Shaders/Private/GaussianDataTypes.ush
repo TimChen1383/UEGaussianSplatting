@@ -241,8 +241,7 @@ void DecomposeCovariance2D(float2x2 cov, out float2 axis1, out float2 axis2)
 		diagVec = (diag1 >= diag2) ? float2(1.0, 0.0) : float2(0.0, 1.0);
 	}
 
-	// Note: No Y-flip here - we work in NDC space where Y increases upward
-	// The Jacobian projection already accounts for screen conventions
+	// Note: No Y-flip needed - Unreal's NDC and Jacobian conventions handle this correctly
 
 	// Scale by sqrt(2*lambda) and clamp maximum size to prevent oversized splats
 	float maxSize = 4096.0;
