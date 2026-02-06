@@ -190,15 +190,8 @@ void FGaussianSplatRenderer::DispatchCalcViewData(
 	Parameters.SplatScale = SplatScale;
 	Parameters.ColorTextureSize = FIntPoint(GaussianSplattingConstants::ColorTextureWidth,
 		FMath::DivideAndRoundUp(SplatCount, GaussianSplattingConstants::ColorTextureWidth));
-	Parameters.PositionFormat = GPUResources->GetPositionFormatUint();  // Use actual format from asset
+	Parameters.PositionFormat = 0;  // Always Float32 (simplified format)
 	Parameters.UseDefaultColor = bHasColorTexture ? 0 : 1;  // Use default color if no texture
-
-	// Log position format for debugging (only occasionally to avoid spam)
-	static int32 LogCounter = 0;
-	if (LogCounter++ % 300 == 0)
-	{
-		UE_LOG(LogTemp, Log, TEXT("CalcViewData: PositionFormat=%d (0=Float32, 1=Norm16)"), Parameters.PositionFormat);
-	}
 
 	// Dispatch compute shader
 	const uint32 ThreadGroupSize = 256;

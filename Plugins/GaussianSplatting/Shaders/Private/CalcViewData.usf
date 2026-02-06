@@ -24,7 +24,7 @@ uint SHOrder;
 float OpacityScale;
 float SplatScale;
 uint2 ColorTextureSize;
-uint PositionFormat; // 0=Float32, 1=Norm16, 2=Norm11, 3=Norm6
+uint PositionFormat; // 0=Float32 (only supported format now)
 uint UseDefaultColor; // 1 = use default color (no texture available), 0 = use texture
 
 [numthreads(256, 1, 1)]
@@ -36,16 +36,8 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		return;
 	}
 
-	// Load splat data
-	float3 localPos;
-	if (PositionFormat == 0)
-	{
-		localPos = LoadPositionFloat32(PositionBuffer, splatIndex);
-	}
-	else
-	{
-		localPos = LoadPositionNorm16(PositionBuffer, ChunkBuffer, splatIndex);
-	}
+	// Load splat data - Always Float32 format (simplified, most reliable)
+	float3 localPos = LoadPositionFloat32(PositionBuffer, splatIndex);
 
 	float4 rotation = LoadRotation(OtherDataBuffer, splatIndex);
 	float3 scale = LoadScale(OtherDataBuffer, splatIndex) * SplatScale;

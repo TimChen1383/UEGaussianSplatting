@@ -84,41 +84,16 @@ void UGaussianSplatAsset::InitializeFromSplatData(const TArray<FGaussianSplatDat
 		return;
 	}
 
-	// Set formats based on quality level
-	switch (InQuality)
-	{
-	case EGaussianQualityLevel::VeryHigh:
-		PositionFormat = EGaussianPositionFormat::Float32;
-		ColorFormat = EGaussianColorFormat::Float32x4;
-		SHFormat = EGaussianSHFormat::Float32;
-		break;
-	case EGaussianQualityLevel::High:
-		PositionFormat = EGaussianPositionFormat::Norm16;
-		ColorFormat = EGaussianColorFormat::Float16x4;
-		SHFormat = EGaussianSHFormat::Float16;
-		break;
-	case EGaussianQualityLevel::Medium:
-		PositionFormat = EGaussianPositionFormat::Norm16;
-		ColorFormat = EGaussianColorFormat::Norm8x4;
-		SHFormat = EGaussianSHFormat::Norm11;
-		break;
-	case EGaussianQualityLevel::Low:
-		PositionFormat = EGaussianPositionFormat::Norm11;
-		ColorFormat = EGaussianColorFormat::Norm8x4;
-		SHFormat = EGaussianSHFormat::Norm6;
-		break;
-	case EGaussianQualityLevel::VeryLow:
-		PositionFormat = EGaussianPositionFormat::Norm6;
-		ColorFormat = EGaussianColorFormat::BC7;
-		SHFormat = EGaussianSHFormat::Cluster4k;
-		break;
-	}
+	// Simplified format: Always use Float32 for positions (most reliable)
+	// This avoids complex quantization/dequantization that can cause precision issues
+	PositionFormat = EGaussianPositionFormat::Float32;
+	ColorFormat = EGaussianColorFormat::Float16x4;  // Good balance for colors
+	SHFormat = EGaussianSHFormat::Float16;          // Good balance for SH
 
-	// Calculate bounds first (needed for chunk quantization)
+	// Calculate bounds (still useful for culling)
 	CalculateBounds(InSplats);
-	CalculateChunkBounds(InSplats);
 
-	// Compress data
+	// Store position data (always Float32 now)
 	CompressPositions(InSplats);
 	CompressRotationScale(InSplats);
 	CreateColorTextureData(InSplats);  // Store raw data for serialization
@@ -200,56 +175,14 @@ TArray<FVector> UGaussianSplatAsset::GetDecompressedPositions() const
 
 	Positions.SetNum(SplatCount);
 	const uint8* DataPtr = PositionData.GetData();
-	const int32 BytesPerSplat = GetPositionBytesPerSplat(PositionFormat);
+
+	// Simplified: Always Float32 format (12 bytes per position)
+	const int32 BytesPerSplat = 12;
 
 	for (int32 i = 0; i < SplatCount; i++)
 	{
-		FVector3f Position;
-
-		switch (PositionFormat)
-		{
-		case EGaussianPositionFormat::Float32:
-		{
-			const float* FloatPtr = reinterpret_cast<const float*>(DataPtr + i * BytesPerSplat);
-			Position.X = FloatPtr[0];
-			Position.Y = FloatPtr[1];
-			Position.Z = FloatPtr[2];
-			break;
-		}
-		case EGaussianPositionFormat::Norm16:
-		{
-			// Get chunk bounds for dequantization
-			const int32 ChunkIdx = i / GaussianSplattingConstants::SplatsPerChunk;
-			if (ChunkIdx < ChunkData.Num())
-			{
-				const FGaussianChunkInfo& Chunk = ChunkData[ChunkIdx];
-
-				const uint16* ShortPtr = reinterpret_cast<const uint16*>(DataPtr + i * BytesPerSplat);
-				float NormX = static_cast<float>(ShortPtr[0]) / 65535.0f;
-				float NormY = static_cast<float>(ShortPtr[1]) / 65535.0f;
-				float NormZ = static_cast<float>(ShortPtr[2]) / 65535.0f;
-
-				// Dequantize using chunk bounds
-				Position.X = Chunk.PosMinMaxX.X + NormX * (Chunk.PosMinMaxX.Y - Chunk.PosMinMaxX.X);
-				Position.Y = Chunk.PosMinMaxY.X + NormY * (Chunk.PosMinMaxY.Y - Chunk.PosMinMaxY.X);
-				Position.Z = Chunk.PosMinMaxZ.X + NormZ * (Chunk.PosMinMaxZ.Y - Chunk.PosMinMaxZ.X);
-			}
-			break;
-		}
-		case EGaussianPositionFormat::Norm11:
-		case EGaussianPositionFormat::Norm6:
-		{
-			// TODO: These formats currently fall back to Float32 in compression
-			// Once implemented, add decompression here
-			const float* FloatPtr = reinterpret_cast<const float*>(DataPtr + i * 12);
-			Position.X = FloatPtr[0];
-			Position.Y = FloatPtr[1];
-			Position.Z = FloatPtr[2];
-			break;
-		}
-		}
-
-		Positions[i] = FVector(Position);
+		const float* FloatPtr = reinterpret_cast<const float*>(DataPtr + i * BytesPerSplat);
+		Positions[i] = FVector(FloatPtr[0], FloatPtr[1], FloatPtr[2]);
 	}
 
 	return Positions;
@@ -293,7 +226,8 @@ void UGaussianSplatAsset::CalculateChunkBounds(const TArray<FGaussianSplatData>&
 
 void UGaussianSplatAsset::CompressPositions(const TArray<FGaussianSplatData>& InSplats)
 {
-	const int32 BytesPerSplat = GetPositionBytesPerSplat(PositionFormat);
+	// Simplified: Always use Float32 format (12 bytes per position)
+	const int32 BytesPerSplat = 12;
 	PositionData.SetNum(SplatCount * BytesPerSplat);
 
 	uint8* DataPtr = PositionData.GetData();
@@ -301,49 +235,10 @@ void UGaussianSplatAsset::CompressPositions(const TArray<FGaussianSplatData>& In
 	for (int32 i = 0; i < SplatCount; i++)
 	{
 		const FGaussianSplatData& Splat = InSplats[i];
-
-		switch (PositionFormat)
-		{
-		case EGaussianPositionFormat::Float32:
-		{
-			float* FloatPtr = reinterpret_cast<float*>(DataPtr + i * BytesPerSplat);
-			FloatPtr[0] = Splat.Position.X;
-			FloatPtr[1] = Splat.Position.Y;
-			FloatPtr[2] = Splat.Position.Z;
-			break;
-		}
-		case EGaussianPositionFormat::Norm16:
-		{
-			// Get chunk bounds for quantization
-			const int32 ChunkIdx = i / GaussianSplattingConstants::SplatsPerChunk;
-			const FGaussianChunkInfo& Chunk = ChunkData[ChunkIdx];
-
-			// Normalize to [0, 1] range within chunk
-			float NormX = (Chunk.PosMinMaxX.Y - Chunk.PosMinMaxX.X) > SMALL_NUMBER ?
-				(Splat.Position.X - Chunk.PosMinMaxX.X) / (Chunk.PosMinMaxX.Y - Chunk.PosMinMaxX.X) : 0.5f;
-			float NormY = (Chunk.PosMinMaxY.Y - Chunk.PosMinMaxY.X) > SMALL_NUMBER ?
-				(Splat.Position.Y - Chunk.PosMinMaxY.X) / (Chunk.PosMinMaxY.Y - Chunk.PosMinMaxY.X) : 0.5f;
-			float NormZ = (Chunk.PosMinMaxZ.Y - Chunk.PosMinMaxZ.X) > SMALL_NUMBER ?
-				(Splat.Position.Z - Chunk.PosMinMaxZ.X) / (Chunk.PosMinMaxZ.Y - Chunk.PosMinMaxZ.X) : 0.5f;
-
-			uint16* ShortPtr = reinterpret_cast<uint16*>(DataPtr + i * BytesPerSplat);
-			ShortPtr[0] = static_cast<uint16>(FMath::Clamp(NormX * 65535.0f, 0.0f, 65535.0f));
-			ShortPtr[1] = static_cast<uint16>(FMath::Clamp(NormY * 65535.0f, 0.0f, 65535.0f));
-			ShortPtr[2] = static_cast<uint16>(FMath::Clamp(NormZ * 65535.0f, 0.0f, 65535.0f));
-			break;
-		}
-		case EGaussianPositionFormat::Norm11:
-		case EGaussianPositionFormat::Norm6:
-		{
-			// TODO: Implement packed formats
-			// For now, fall back to float32
-			float* FloatPtr = reinterpret_cast<float*>(DataPtr + i * 12);
-			FloatPtr[0] = Splat.Position.X;
-			FloatPtr[1] = Splat.Position.Y;
-			FloatPtr[2] = Splat.Position.Z;
-			break;
-		}
-		}
+		float* FloatPtr = reinterpret_cast<float*>(DataPtr + i * BytesPerSplat);
+		FloatPtr[0] = Splat.Position.X;
+		FloatPtr[1] = Splat.Position.Y;
+		FloatPtr[2] = Splat.Position.Z;
 	}
 }
 

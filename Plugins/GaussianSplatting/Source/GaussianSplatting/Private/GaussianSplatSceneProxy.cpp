@@ -159,10 +159,16 @@ void FGaussianSplatGPUResources::CreateStaticBuffers(FRHICommandListBase& RHICmd
 				.SetType(FRHIViewDesc::EBufferType::Raw));
 	}
 
-	// Chunk buffer
-	if (CachedChunkData.Num() > 0)
+	// Chunk buffer - Always create at least a dummy buffer for shader binding
+	// (Even though we always use Float32 positions now, shader still expects this parameter)
 	{
-		const uint32 ChunkSize = CachedChunkData.Num() * sizeof(FGaussianChunkInfo);
+		uint32 ChunkCount = CachedChunkData.Num();
+		if (ChunkCount == 0)
+		{
+			ChunkCount = 1;  // Create dummy entry
+		}
+
+		const uint32 ChunkSize = ChunkCount * sizeof(FGaussianChunkInfo);
 		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
 			TEXT("GaussianChunkBuffer"),
 			ChunkSize,
@@ -172,7 +178,14 @@ void FGaussianSplatGPUResources::CreateStaticBuffers(FRHICommandListBase& RHICmd
 		ChunkBuffer = RHICmdList.CreateBuffer(Desc);
 
 		void* Data = RHICmdList.LockBuffer(ChunkBuffer, 0, ChunkSize, RLM_WriteOnly);
-		FMemory::Memcpy(Data, CachedChunkData.GetData(), ChunkSize);
+		if (CachedChunkData.Num() > 0)
+		{
+			FMemory::Memcpy(Data, CachedChunkData.GetData(), ChunkSize);
+		}
+		else
+		{
+			FMemory::Memzero(Data, ChunkSize);  // Zero-initialize dummy entry
+		}
 		RHICmdList.UnlockBuffer(ChunkBuffer);
 
 		ChunkBufferSRV = RHICmdList.CreateShaderResourceView(

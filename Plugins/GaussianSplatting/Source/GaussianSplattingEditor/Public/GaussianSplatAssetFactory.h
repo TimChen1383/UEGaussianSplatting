@@ -44,9 +44,8 @@ public:
 	//~ End FReimportHandler Interface
 
 public:
-	/** Import quality level */
-	UPROPERTY(EditAnywhere, Category = "Import Settings")
-	EGaussianQualityLevel QualityLevel = EGaussianQualityLevel::Medium;
+	/** Import quality level (currently unused - always uses Float32 positions for maximum accuracy) */
+	EGaussianQualityLevel QualityLevel = EGaussianQualityLevel::VeryHigh;
 
 private:
 	/**
