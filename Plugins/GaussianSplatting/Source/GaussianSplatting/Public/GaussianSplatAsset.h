@@ -84,9 +84,21 @@ public:
 	UPROPERTY()
 	TArray<FGaussianChunkInfo> ChunkData;
 
-	/** Color texture (Morton-swizzled, 2048 x N) */
-	UPROPERTY()
+	/** Color texture (Morton-swizzled, 2048 x N) - created at runtime from ColorTextureData */
+	UPROPERTY(Transient)
 	TObjectPtr<UTexture2D> ColorTexture;
+
+	/** Raw color texture pixel data (serialized, used to recreate ColorTexture at runtime) */
+	UPROPERTY()
+	TArray<uint8> ColorTextureData;
+
+	/** Color texture width */
+	UPROPERTY()
+	int32 ColorTextureWidth = 0;
+
+	/** Color texture height */
+	UPROPERTY()
+	int32 ColorTextureHeight = 0;
 
 	/** Source file path (for reimport) */
 	UPROPERTY(VisibleAnywhere, Category = "Import")
@@ -127,8 +139,11 @@ private:
 	/** Compress and store rotation/scale data */
 	void CompressRotationScale(const TArray<FGaussianSplatData>& InSplats);
 
-	/** Create color texture with Morton swizzling */
-	void CreateColorTexture(const TArray<FGaussianSplatData>& InSplats);
+	/** Create color texture data with Morton swizzling (stores raw data for serialization) */
+	void CreateColorTextureData(const TArray<FGaussianSplatData>& InSplats);
+
+	/** Create UTexture2D from stored ColorTextureData (called after load or import) */
+	void CreateColorTextureFromData();
 
 	/** Compress and store SH data */
 	void CompressSH(const TArray<FGaussianSplatData>& InSplats);

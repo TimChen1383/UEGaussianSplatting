@@ -169,16 +169,6 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	// Clamp color to valid range
 	float3 finalColor = max(shColor, 0.0);
 
-	// DEBUG: Use bright colors with full opacity to test if axes are working
-	// Comment this block once axes are verified
-	float normalizedIndex = float(splatIndex) / float(max(SplatCount, 1));
-	finalColor = float3(
-		frac(normalizedIndex * 7.0),  // R: cycling pattern
-		1.0 - normalizedIndex,         // G: gradient
-		normalizedIndex                // B: gradient
-	);
-	opacity = 1.0;  // Full opacity for debugging
-
 	// Pack and store view data
 	FGaussianSplatViewData viewData;
 	viewData.ClipPosition = clipPos;

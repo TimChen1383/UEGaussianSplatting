@@ -133,14 +133,13 @@ float3x3 CalcCovariance3D(float4 rotation, float3 scale)
 {
 	float3x3 R = QuatToMatrix(rotation);
 
-	// Scale matrix (diagonal)
-	float3 s2 = scale * scale;
-
-	// RS = R * diag(scale)
+	// RS = R * diag(scale) - multiply rotation matrix by diagonal scale matrix
+	// This scales each COLUMN of R by the corresponding scale value
+	// (equivalent to: mul(R, float3x3(scale.x,0,0, 0,scale.y,0, 0,0,scale.z)))
 	float3x3 RS;
-	RS[0] = R[0] * scale.x;
-	RS[1] = R[1] * scale.y;
-	RS[2] = R[2] * scale.z;
+	RS[0] = float3(R[0][0] * scale.x, R[0][1] * scale.y, R[0][2] * scale.z);
+	RS[1] = float3(R[1][0] * scale.x, R[1][1] * scale.y, R[1][2] * scale.z);
+	RS[2] = float3(R[2][0] * scale.x, R[2][1] * scale.y, R[2][2] * scale.z);
 
 	// Covariance = RS * RS^T
 	float3x3 cov;

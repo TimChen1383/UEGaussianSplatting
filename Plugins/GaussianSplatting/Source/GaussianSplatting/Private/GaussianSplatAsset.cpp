@@ -13,7 +13,6 @@ void UGaussianSplatAsset::Serialize(FArchive& Ar)
 {
 	Super::Serialize(Ar);
 
-	// Serialize bulk data arrays
 	Ar << SplatCount;
 	Ar << BoundingBox;
 	Ar << PositionFormat;
@@ -26,11 +25,28 @@ void UGaussianSplatAsset::Serialize(FArchive& Ar)
 	Ar << ChunkData;
 	Ar << SourceFilePath;
 	Ar << ImportQuality;
+	Ar << ColorTextureData;
+	Ar << ColorTextureWidth;
+	Ar << ColorTextureHeight;
 }
 
 void UGaussianSplatAsset::PostLoad()
 {
 	Super::PostLoad();
+
+	UE_LOG(LogTemp, Log, TEXT("GaussianSplatAsset::PostLoad - SplatCount=%d, ColorTextureData.Num()=%d, Width=%d, Height=%d"),
+		SplatCount, ColorTextureData.Num(), ColorTextureWidth, ColorTextureHeight);
+
+	// Recreate the ColorTexture from the stored raw data
+	if (ColorTextureData.Num() > 0 && ColorTextureWidth > 0 && ColorTextureHeight > 0)
+	{
+		CreateColorTextureFromData();
+		UE_LOG(LogTemp, Log, TEXT("GaussianSplatAsset::PostLoad - ColorTexture recreated successfully"));
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("GaussianSplatAsset::PostLoad - No ColorTextureData to restore (might be old asset format)"));
+	}
 }
 
 #if WITH_EDITOR
@@ -48,6 +64,7 @@ int64 UGaussianSplatAsset::GetMemoryUsage() const
 	TotalBytes += OtherData.Num();
 	TotalBytes += SHData.Num();
 	TotalBytes += ChunkData.Num() * sizeof(FGaussianChunkInfo);
+	TotalBytes += ColorTextureData.Num();
 
 	if (ColorTexture)
 	{
@@ -104,7 +121,8 @@ void UGaussianSplatAsset::InitializeFromSplatData(const TArray<FGaussianSplatDat
 	// Compress data
 	CompressPositions(InSplats);
 	CompressRotationScale(InSplats);
-	CreateColorTexture(InSplats);
+	CreateColorTextureData(InSplats);  // Store raw data for serialization
+	CreateColorTextureFromData();       // Create the runtime texture
 	CompressSH(InSplats);
 
 	UE_LOG(LogTemp, Log, TEXT("GaussianSplatAsset: Initialized with %d splats, memory: %lld bytes"),
@@ -359,25 +377,71 @@ void UGaussianSplatAsset::CompressRotationScale(const TArray<FGaussianSplatData>
 	}
 }
 
-void UGaussianSplatAsset::CreateColorTexture(const TArray<FGaussianSplatData>& InSplats)
+void UGaussianSplatAsset::CreateColorTextureData(const TArray<FGaussianSplatData>& InSplats)
 {
-	const int32 TextureWidth = GaussianSplattingConstants::ColorTextureWidth;
-	const int32 PixelsNeeded = SplatCount;
-	const int32 TextureHeight = FMath::DivideAndRoundUp(PixelsNeeded, TextureWidth);
+	// Store texture dimensions
+	ColorTextureWidth = GaussianSplattingConstants::ColorTextureWidth;
+	ColorTextureHeight = FMath::DivideAndRoundUp(SplatCount, ColorTextureWidth);
 
-	UE_LOG(LogTemp, Log, TEXT("CreateColorTexture: Creating %dx%d texture for %d splats"), TextureWidth, TextureHeight, SplatCount);
+	UE_LOG(LogTemp, Log, TEXT("CreateColorTextureData: Creating %dx%d data for %d splats"),
+		ColorTextureWidth, ColorTextureHeight, SplatCount);
 
-	// Create texture using UE 5.6 API
-	ColorTexture = NewObject<UTexture2D>(this, NAME_None, RF_Public);
+	// Allocate raw pixel data (FFloat16Color = 8 bytes per pixel: R16G16B16A16)
+	const int32 NumBytes = ColorTextureWidth * ColorTextureHeight * sizeof(FFloat16Color);
+	ColorTextureData.SetNum(NumBytes);
+
+	FFloat16Color* PixelData = reinterpret_cast<FFloat16Color*>(ColorTextureData.GetData());
+
+	// Initialize to black
+	FMemory::Memzero(PixelData, NumBytes);
+
+	// Fill with color data using Morton swizzling
+	for (int32 i = 0; i < SplatCount; i++)
+	{
+		const FGaussianSplatData& Splat = InSplats[i];
+
+		// Calculate Morton-swizzled texture coordinate
+		int32 TexX, TexY;
+		GaussianSplattingUtils::SplatIndexToTextureCoord(i, ColorTextureWidth, TexX, TexY);
+
+		if (TexY < ColorTextureHeight)
+		{
+			// Convert SH DC to color
+			FVector3f Color = GaussianSplattingUtils::SHDCToColor(Splat.SH_DC);
+
+			FFloat16Color& Pixel = PixelData[TexY * ColorTextureWidth + TexX];
+			Pixel.R = FFloat16(FMath::Clamp(Color.X, 0.0f, 1.0f));
+			Pixel.G = FFloat16(FMath::Clamp(Color.Y, 0.0f, 1.0f));
+			Pixel.B = FFloat16(FMath::Clamp(Color.Z, 0.0f, 1.0f));
+			Pixel.A = FFloat16(FMath::Clamp(Splat.Opacity, 0.0f, 1.0f));
+		}
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("CreateColorTextureData: Stored %d bytes of pixel data"), NumBytes);
+}
+
+void UGaussianSplatAsset::CreateColorTextureFromData()
+{
+	if (ColorTextureData.Num() == 0 || ColorTextureWidth <= 0 || ColorTextureHeight <= 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("CreateColorTextureFromData: No data to create texture from"));
+		return;
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("CreateColorTextureFromData: Creating %dx%d texture from stored data"),
+		ColorTextureWidth, ColorTextureHeight);
+
+	// Create texture - use Transient flag since this is recreated at runtime
+	ColorTexture = NewObject<UTexture2D>(this, NAME_None, RF_Transient);
 
 	// Initialize platform data
 	FTexturePlatformData* PlatformData = new FTexturePlatformData();
-	PlatformData->SizeX = TextureWidth;
-	PlatformData->SizeY = TextureHeight;
+	PlatformData->SizeX = ColorTextureWidth;
+	PlatformData->SizeY = ColorTextureHeight;
 	PlatformData->PixelFormat = PF_FloatRGBA;
 	ColorTexture->SetPlatformData(PlatformData);
 
-	// Configure texture settings - must be set before UpdateResource
+	// Configure texture settings
 	ColorTexture->SRGB = false;
 	ColorTexture->CompressionSettings = TC_HDR;
 	ColorTexture->Filter = TF_Nearest;
@@ -390,45 +454,20 @@ void UGaussianSplatAsset::CreateColorTexture(const TArray<FGaussianSplatData>& I
 	// Create mip 0
 	FTexture2DMipMap* Mip = new FTexture2DMipMap();
 	PlatformData->Mips.Add(Mip);
-	Mip->SizeX = TextureWidth;
-	Mip->SizeY = TextureHeight;
+	Mip->SizeX = ColorTextureWidth;
+	Mip->SizeY = ColorTextureHeight;
 
-	// Allocate bulk data for the mip
-	const int32 NumBytes = TextureWidth * TextureHeight * sizeof(FFloat16Color);
+	// Copy the stored pixel data into the mip's bulk data
+	const int32 NumBytes = ColorTextureData.Num();
 	Mip->BulkData.Lock(LOCK_READ_WRITE);
-	FFloat16Color* MipData = reinterpret_cast<FFloat16Color*>(Mip->BulkData.Realloc(NumBytes));
-
-	// Initialize to black
-	FMemory::Memzero(MipData, NumBytes);
-
-	// Fill with color data using Morton swizzling
-	for (int32 i = 0; i < SplatCount; i++)
-	{
-		const FGaussianSplatData& Splat = InSplats[i];
-
-		// Calculate Morton-swizzled texture coordinate
-		int32 TexX, TexY;
-		GaussianSplattingUtils::SplatIndexToTextureCoord(i, TextureWidth, TexX, TexY);
-
-		if (TexY < TextureHeight)
-		{
-			// Convert SH DC to color
-			FVector3f Color = GaussianSplattingUtils::SHDCToColor(Splat.SH_DC);
-
-			FFloat16Color& Pixel = MipData[TexY * TextureWidth + TexX];
-			Pixel.R = FFloat16(FMath::Clamp(Color.X, 0.0f, 1.0f));
-			Pixel.G = FFloat16(FMath::Clamp(Color.Y, 0.0f, 1.0f));
-			Pixel.B = FFloat16(FMath::Clamp(Color.Z, 0.0f, 1.0f));
-			Pixel.A = FFloat16(FMath::Clamp(Splat.Opacity, 0.0f, 1.0f));
-		}
-	}
-
+	void* MipData = Mip->BulkData.Realloc(NumBytes);
+	FMemory::Memcpy(MipData, ColorTextureData.GetData(), NumBytes);
 	Mip->BulkData.Unlock();
 
-	// Update the texture resource - this creates the GPU resource
+	// Create the GPU resource
 	ColorTexture->UpdateResource();
 
-	UE_LOG(LogTemp, Log, TEXT("CreateColorTexture: Texture created and resource updated"));
+	UE_LOG(LogTemp, Log, TEXT("CreateColorTextureFromData: Texture created and resource updated"));
 }
 
 void UGaussianSplatAsset::CompressSH(const TArray<FGaussianSplatData>& InSplats)

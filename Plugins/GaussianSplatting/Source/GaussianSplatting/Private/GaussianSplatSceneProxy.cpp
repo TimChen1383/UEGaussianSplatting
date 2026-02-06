@@ -489,7 +489,31 @@ void FGaussianSplatSceneProxy::CreateRenderThreadResources(FRHICommandListBase& 
 		// Get color texture reference
 		if (CachedAsset->ColorTexture)
 		{
+			// Diagnostic: Check texture state
+			FTexturePlatformData* PlatformData = CachedAsset->ColorTexture->GetPlatformData();
+			int64 BulkDataSize = 0;
+			if (PlatformData && PlatformData->Mips.Num() > 0)
+			{
+				BulkDataSize = PlatformData->Mips[0].BulkData.GetBulkDataSize();
+			}
+
+			UE_LOG(LogTemp, Warning, TEXT("CreateRenderThreadResources: ColorTexture exists, SizeX=%d, SizeY=%d, PlatformData=%p, NumMips=%d, BulkDataSize=%lld"),
+				CachedAsset->ColorTexture->GetSizeX(),
+				CachedAsset->ColorTexture->GetSizeY(),
+				PlatformData,
+				PlatformData ? PlatformData->Mips.Num() : 0,
+				BulkDataSize);
+
+			// If platform data exists but no resource, try to create it
 			FTextureResource* TextureResource = CachedAsset->ColorTexture->GetResource();
+			if (!TextureResource && PlatformData && BulkDataSize > 0)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("CreateRenderThreadResources: Calling UpdateResource() to create texture resource"));
+				CachedAsset->ColorTexture->UpdateResource();
+				// Re-check after UpdateResource
+				TextureResource = CachedAsset->ColorTexture->GetResource();
+			}
+
 			if (TextureResource && TextureResource->TextureRHI)
 			{
 				GPUResources->ColorTexture = TextureResource->TextureRHI;
@@ -497,10 +521,13 @@ void FGaussianSplatSceneProxy::CreateRenderThreadResources(FRHICommandListBase& 
 					GPUResources->ColorTexture,
 					FRHIViewDesc::CreateTextureSRV()
 						.SetDimension(ETextureDimension::Texture2D));
+				UE_LOG(LogTemp, Warning, TEXT("CreateRenderThreadResources: ColorTexture SRV created successfully"));
 			}
 			else
 			{
-				UE_LOG(LogTemp, Warning, TEXT("GaussianSplatSceneProxy: ColorTexture resource not ready yet"));
+				UE_LOG(LogTemp, Warning, TEXT("CreateRenderThreadResources: ColorTexture resource not ready yet (Resource=%p, TextureRHI=%p)"),
+					TextureResource,
+					TextureResource ? TextureResource->TextureRHI.GetReference() : nullptr);
 			}
 		}
 		else
@@ -549,10 +576,50 @@ void FGaussianSplatSceneProxy::TryInitializeColorTexture(FRHICommandListBase& RH
 
 	if (!CachedAsset || !CachedAsset->ColorTexture)
 	{
+		// Log once why we can't initialize
+		static bool bLoggedMissingAsset = false;
+		if (!bLoggedMissingAsset)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("TryInitializeColorTexture: CachedAsset=%p, ColorTexture=%p"),
+				CachedAsset, CachedAsset ? CachedAsset->ColorTexture.Get() : nullptr);
+			bLoggedMissingAsset = true;
+		}
 		return;
 	}
 
 	FTextureResource* TextureResource = CachedAsset->ColorTexture->GetResource();
+
+	// Log diagnostic info about texture state
+	static int32 LogCount = 0;
+	if (LogCount < 10) // Only log first 10 attempts
+	{
+		// Check platform data and mip info
+		FTexturePlatformData* PlatformData = CachedAsset->ColorTexture->GetPlatformData();
+		int64 BulkDataSize = 0;
+		if (PlatformData && PlatformData->Mips.Num() > 0)
+		{
+			BulkDataSize = PlatformData->Mips[0].BulkData.GetBulkDataSize();
+		}
+
+		UE_LOG(LogTemp, Warning, TEXT("TryInitializeColorTexture [%d]: Resource=%p, TextureRHI=%p, SizeX=%d, SizeY=%d, PlatformData=%p, BulkDataSize=%lld"),
+			LogCount,
+			TextureResource,
+			TextureResource ? TextureResource->TextureRHI.GetReference() : nullptr,
+			CachedAsset->ColorTexture->GetSizeX(),
+			CachedAsset->ColorTexture->GetSizeY(),
+			PlatformData,
+			BulkDataSize);
+
+		// If resource doesn't exist but platform data does, try to create it
+		if (!TextureResource && PlatformData && BulkDataSize > 0)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("TryInitializeColorTexture: Calling UpdateResource() to create texture resource"));
+			CachedAsset->ColorTexture->UpdateResource();
+		}
+
+		LogCount++;
+	}
+
 	if (TextureResource && TextureResource->TextureRHI)
 	{
 		GPUResources->ColorTexture = TextureResource->TextureRHI;
@@ -561,6 +628,6 @@ void FGaussianSplatSceneProxy::TryInitializeColorTexture(FRHICommandListBase& RH
 			FRHIViewDesc::CreateTextureSRV()
 				.SetDimension(ETextureDimension::Texture2D));
 
-		UE_LOG(LogTemp, Log, TEXT("GaussianSplatSceneProxy: ColorTexture SRV initialized (deferred)"));
+		UE_LOG(LogTemp, Warning, TEXT("GaussianSplatSceneProxy: ColorTexture SRV initialized (deferred) - SUCCESS!"));
 	}
 }
