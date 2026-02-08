@@ -150,3 +150,113 @@ class FGaussianSplatBitonicSortCS : public FGlobalShader
 		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZE"), 256);
 	}
 };
+
+/**
+ * Radix sort - CountCS: per-tile histogram of 256 digit bins
+ */
+class FRadixSortCountCS : public FGlobalShader
+{
+	DECLARE_GLOBAL_SHADER(FRadixSortCountCS);
+	SHADER_USE_PARAMETER_STRUCT(FRadixSortCountCS, FGlobalShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, HistogramBuffer)
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, SrcKeys)
+		SHADER_PARAMETER(uint32, RadixShift)
+		SHADER_PARAMETER(uint32, Count)
+		SHADER_PARAMETER(uint32, NumTiles)
+	END_SHADER_PARAMETER_STRUCT()
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+	}
+
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		OutEnvironment.SetDefine(TEXT("COUNT_CS"), 1);
+	}
+};
+
+/**
+ * Radix sort - PrefixSumCS: exclusive prefix sum per digit across tiles
+ */
+class FRadixSortPrefixSumCS : public FGlobalShader
+{
+	DECLARE_GLOBAL_SHADER(FRadixSortPrefixSumCS);
+	SHADER_USE_PARAMETER_STRUCT(FRadixSortPrefixSumCS, FGlobalShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, HistogramBuffer)
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, DigitOffsetBuffer)
+		SHADER_PARAMETER(uint32, NumTiles)
+	END_SHADER_PARAMETER_STRUCT()
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+	}
+
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		OutEnvironment.SetDefine(TEXT("PREFIX_SUM_CS"), 1);
+	}
+};
+
+/**
+ * Radix sort - DigitPrefixSumCS: exclusive prefix sum across 256 digit totals
+ */
+class FRadixSortDigitPrefixSumCS : public FGlobalShader
+{
+	DECLARE_GLOBAL_SHADER(FRadixSortDigitPrefixSumCS);
+	SHADER_USE_PARAMETER_STRUCT(FRadixSortDigitPrefixSumCS, FGlobalShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, DigitOffsetBuffer)
+	END_SHADER_PARAMETER_STRUCT()
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+	}
+
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		OutEnvironment.SetDefine(TEXT("DIGIT_PREFIX_SUM_CS"), 1);
+	}
+};
+
+/**
+ * Radix sort - ScatterCS: write keys+values to sorted positions
+ */
+class FRadixSortScatterCS : public FGlobalShader
+{
+	DECLARE_GLOBAL_SHADER(FRadixSortScatterCS);
+	SHADER_USE_PARAMETER_STRUCT(FRadixSortScatterCS, FGlobalShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, SrcKeys)
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, SrcVals)
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, DstKeys)
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, DstVals)
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, HistogramBuffer)
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, DigitOffsetBuffer)
+		SHADER_PARAMETER(uint32, RadixShift)
+		SHADER_PARAMETER(uint32, Count)
+		SHADER_PARAMETER(uint32, NumTiles)
+	END_SHADER_PARAMETER_STRUCT()
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+	}
+
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		OutEnvironment.SetDefine(TEXT("SCATTER_CS"), 1);
+	}
+};

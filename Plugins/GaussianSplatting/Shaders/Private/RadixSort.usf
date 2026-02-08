@@ -1,0 +1,260 @@
+// GPU Radix Sort - 8-bit LSD, SM5 compatible
+// 4 passes processing bits 0-7, 8-15, 16-23, 24-31
+// Each pass: CountCS -> PrefixSumCS -> DigitPrefixSumCS -> ScatterCS
+
+#include "/Engine/Public/Platform.ush"
+
+#define RADIX_BITS 8
+#define NUM_DIGITS 256
+#define BLOCK_THREADS 256
+#define KEYS_PER_THREAD 4
+#define TILE_SIZE (BLOCK_THREADS * KEYS_PER_THREAD) // 1024
+
+// ============================================================================
+// CountCS - Per-tile histogram of 256 digit bins
+// Dispatch: (NumTiles, 1, 1) with 256 threads per group
+// ============================================================================
+
+#ifdef COUNT_CS
+
+RWStructuredBuffer<uint> HistogramBuffer; // [digit * NumTiles + tileIdx]
+RWStructuredBuffer<uint> SrcKeys;         // Sort keys (distances)
+uint RadixShift;
+uint Count;
+uint NumTiles;
+
+groupshared uint SharedHistogram[NUM_DIGITS];
+
+[numthreads(BLOCK_THREADS, 1, 1)]
+void CountCS(uint3 GroupId : SV_GroupID, uint3 GroupThreadId : SV_GroupThreadID)
+{
+	uint tileIdx = GroupId.x;
+	uint threadIdx = GroupThreadId.x;
+
+	// Clear shared histogram
+	SharedHistogram[threadIdx] = 0;
+	GroupMemoryBarrierWithGroupSync();
+
+	// Each thread counts KEYS_PER_THREAD keys
+	uint tileStart = tileIdx * TILE_SIZE;
+	for (uint i = 0; i < KEYS_PER_THREAD; i++)
+	{
+		uint idx = tileStart + threadIdx + i * BLOCK_THREADS;
+		if (idx < Count)
+		{
+			uint key = SrcKeys[idx];
+			uint digit = (key >> RadixShift) & 0xFF;
+			InterlockedAdd(SharedHistogram[digit], 1);
+		}
+	}
+
+	GroupMemoryBarrierWithGroupSync();
+
+	// Write shared histogram to global memory
+	HistogramBuffer[threadIdx * NumTiles + tileIdx] = SharedHistogram[threadIdx];
+}
+
+#endif // COUNT_CS
+
+// ============================================================================
+// PrefixSumCS - Exclusive prefix sum per digit across tiles
+// Dispatch: (256, 1, 1) with 256 threads per group
+// One group per digit, scans across tiles in chunks of 256
+// ============================================================================
+
+#ifdef PREFIX_SUM_CS
+
+RWStructuredBuffer<uint> HistogramBuffer;    // [digit * NumTiles + tileIdx]
+RWStructuredBuffer<uint> DigitOffsetBuffer;  // [digit] - total count per digit
+uint NumTiles;
+
+groupshared uint SharedData[BLOCK_THREADS];
+
+[numthreads(BLOCK_THREADS, 1, 1)]
+void PrefixSumCS(uint3 GroupId : SV_GroupID, uint3 GroupThreadId : SV_GroupThreadID)
+{
+	uint digit = GroupId.x;
+	uint threadIdx = GroupThreadId.x;
+	uint baseOffset = digit * NumTiles;
+
+	uint runningTotal = 0;
+
+	// Process tiles in chunks of BLOCK_THREADS
+	for (uint chunkStart = 0; chunkStart < NumTiles; chunkStart += BLOCK_THREADS)
+	{
+		uint tileIdx = chunkStart + threadIdx;
+
+		// Load value
+		uint val = 0;
+		if (tileIdx < NumTiles)
+		{
+			val = HistogramBuffer[baseOffset + tileIdx];
+		}
+		SharedData[threadIdx] = val;
+		GroupMemoryBarrierWithGroupSync();
+
+		// Hillis-Steele inclusive prefix sum
+		for (uint offset = 1; offset < BLOCK_THREADS; offset <<= 1)
+		{
+			uint temp = 0;
+			if (threadIdx >= offset)
+			{
+				temp = SharedData[threadIdx - offset];
+			}
+			GroupMemoryBarrierWithGroupSync();
+			SharedData[threadIdx] += temp;
+			GroupMemoryBarrierWithGroupSync();
+		}
+
+		// Convert to exclusive and add running total
+		uint exclusive = (threadIdx == 0) ? 0 : SharedData[threadIdx - 1];
+		exclusive += runningTotal;
+
+		// Write back
+		if (tileIdx < NumTiles)
+		{
+			HistogramBuffer[baseOffset + tileIdx] = exclusive;
+		}
+
+		// Update running total (last element's inclusive sum)
+		runningTotal += SharedData[BLOCK_THREADS - 1];
+
+		GroupMemoryBarrierWithGroupSync();
+	}
+
+	// Thread 0 writes the total count for this digit
+	if (threadIdx == 0)
+	{
+		DigitOffsetBuffer[digit] = runningTotal;
+	}
+}
+
+#endif // PREFIX_SUM_CS
+
+// ============================================================================
+// DigitPrefixSumCS - Exclusive prefix sum across 256 digit totals
+// Dispatch: (1, 1, 1) with 256 threads
+// ============================================================================
+
+#ifdef DIGIT_PREFIX_SUM_CS
+
+RWStructuredBuffer<uint> DigitOffsetBuffer; // [digit]
+
+groupshared uint SharedData[NUM_DIGITS];
+
+[numthreads(NUM_DIGITS, 1, 1)]
+void DigitPrefixSumCS(uint3 GroupThreadId : SV_GroupThreadID)
+{
+	uint threadIdx = GroupThreadId.x;
+
+	// Load
+	SharedData[threadIdx] = DigitOffsetBuffer[threadIdx];
+	GroupMemoryBarrierWithGroupSync();
+
+	// Hillis-Steele inclusive prefix sum
+	for (uint offset = 1; offset < NUM_DIGITS; offset <<= 1)
+	{
+		uint temp = 0;
+		if (threadIdx >= offset)
+		{
+			temp = SharedData[threadIdx - offset];
+		}
+		GroupMemoryBarrierWithGroupSync();
+		SharedData[threadIdx] += temp;
+		GroupMemoryBarrierWithGroupSync();
+	}
+
+	// Convert to exclusive: shift right, first element = 0
+	uint exclusive = (threadIdx == 0) ? 0 : SharedData[threadIdx - 1];
+	DigitOffsetBuffer[threadIdx] = exclusive;
+}
+
+#endif // DIGIT_PREFIX_SUM_CS
+
+// ============================================================================
+// ScatterCS - Write keys+values to sorted positions
+// Dispatch: (NumTiles, 1, 1) with 256 threads per group
+// ============================================================================
+
+#ifdef SCATTER_CS
+
+RWStructuredBuffer<uint> SrcKeys;
+RWStructuredBuffer<uint> SrcVals;
+RWStructuredBuffer<uint> DstKeys;
+RWStructuredBuffer<uint> DstVals;
+RWStructuredBuffer<uint> HistogramBuffer;    // [digit * NumTiles + tileIdx] - tile prefix sums
+RWStructuredBuffer<uint> DigitOffsetBuffer;  // [digit] - global digit offsets
+uint RadixShift;
+uint Count;
+uint NumTiles;
+
+groupshared uint SharedKeys[TILE_SIZE];
+groupshared uint SharedVals[TILE_SIZE];
+groupshared uint SharedDigits[TILE_SIZE];
+groupshared uint SharedDigitOffsets[NUM_DIGITS]; // per-digit local offset within this tile
+
+[numthreads(BLOCK_THREADS, 1, 1)]
+void ScatterCS(uint3 GroupId : SV_GroupID, uint3 GroupThreadId : SV_GroupThreadID)
+{
+	uint tileIdx = GroupId.x;
+	uint threadIdx = GroupThreadId.x;
+	uint tileStart = tileIdx * TILE_SIZE;
+
+	// Load digit offsets for this tile into shared memory
+	// SharedDigitOffsets[d] = DigitOffsetBuffer[d] + HistogramBuffer[d * NumTiles + tileIdx]
+	SharedDigitOffsets[threadIdx] = DigitOffsetBuffer[threadIdx] + HistogramBuffer[threadIdx * NumTiles + tileIdx];
+	GroupMemoryBarrierWithGroupSync();
+
+	// Load keys, values, and digits into shared memory
+	for (uint i = 0; i < KEYS_PER_THREAD; i++)
+	{
+		uint localIdx = threadIdx + i * BLOCK_THREADS;
+		uint globalIdx = tileStart + localIdx;
+
+		if (globalIdx < Count)
+		{
+			uint key = SrcKeys[globalIdx];
+			SharedKeys[localIdx] = key;
+			SharedVals[localIdx] = SrcVals[globalIdx];
+			SharedDigits[localIdx] = (key >> RadixShift) & 0xFF;
+		}
+		else
+		{
+			SharedKeys[localIdx] = 0xFFFFFFFF;
+			SharedVals[localIdx] = 0;
+			SharedDigits[localIdx] = 0xFF;
+		}
+	}
+
+	GroupMemoryBarrierWithGroupSync();
+
+	// Compute stable rank for each element owned by this thread
+	// Rank = number of preceding elements in this tile with the same digit
+	uint tileCount = min(TILE_SIZE, Count - tileStart);
+
+	for (uint i = 0; i < KEYS_PER_THREAD; i++)
+	{
+		uint localIdx = threadIdx + i * BLOCK_THREADS;
+		if (localIdx < tileCount)
+		{
+			uint myDigit = SharedDigits[localIdx];
+
+			// Count how many elements before me have the same digit (stable rank)
+			uint rank = 0;
+			for (uint j = 0; j < localIdx; j++)
+			{
+				if (SharedDigits[j] == myDigit)
+				{
+					rank++;
+				}
+			}
+
+			// Scatter to output
+			uint dstIdx = SharedDigitOffsets[myDigit] + rank;
+			DstKeys[dstIdx] = SharedKeys[localIdx];
+			DstVals[dstIdx] = SharedVals[localIdx];
+		}
+	}
+}
+
+#endif // SCATTER_CS

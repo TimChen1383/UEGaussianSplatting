@@ -71,6 +71,18 @@ public:
 	FUnorderedAccessViewRHIRef SortKeysBufferAltUAV;
 	FShaderResourceViewRHIRef SortKeysBufferAltSRV;
 
+	/** Sort distance buffer alt (for radix sort ping-pong) */
+	FBufferRHIRef SortDistanceBufferAlt;
+	FUnorderedAccessViewRHIRef SortDistanceBufferAltUAV;
+
+	/** Radix sort histogram buffer */
+	FBufferRHIRef RadixHistogramBuffer;
+	FUnorderedAccessViewRHIRef RadixHistogramBufferUAV;
+
+	/** Radix sort digit offset buffer */
+	FBufferRHIRef RadixDigitOffsetBuffer;
+	FUnorderedAccessViewRHIRef RadixDigitOffsetBufferUAV;
+
 	/** Index buffer for quad rendering */
 	FBufferRHIRef IndexBuffer;
 

@@ -84,6 +84,12 @@ void FGaussianSplatGPUResources::ReleaseRHI()
 	SortKeysBufferAlt.SafeRelease();
 	SortKeysBufferAltUAV.SafeRelease();
 	SortKeysBufferAltSRV.SafeRelease();
+	SortDistanceBufferAlt.SafeRelease();
+	SortDistanceBufferAltUAV.SafeRelease();
+	RadixHistogramBuffer.SafeRelease();
+	RadixHistogramBufferUAV.SafeRelease();
+	RadixDigitOffsetBuffer.SafeRelease();
+	RadixDigitOffsetBufferUAV.SafeRelease();
 	IndexBuffer.SafeRelease();
 	ColorTexture.SafeRelease();
 	ColorTextureSRV.SafeRelease();
@@ -281,6 +287,55 @@ void FGaussianSplatGPUResources::CreateDynamicBuffers(FRHICommandListBase& RHICm
 				.SetStride(sizeof(uint32)));
 		SortKeysBufferAltSRV = RHICmdList.CreateShaderResourceView(
 			SortKeysBufferAlt, FRHIViewDesc::CreateBufferSRV()
+				.SetType(FRHIViewDesc::EBufferType::Structured)
+				.SetStride(sizeof(uint32)));
+	}
+
+	// Sort distance buffer alt (for radix sort ping-pong)
+	{
+		const uint32 BufferSize = PaddedCount * sizeof(uint32);
+		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
+			TEXT("GaussianSortDistanceBufferAlt"),
+			BufferSize,
+			sizeof(uint32),
+			BUF_UnorderedAccess | BUF_StructuredBuffer)
+			.SetInitialState(ERHIAccess::UAVCompute);
+		SortDistanceBufferAlt = RHICmdList.CreateBuffer(Desc);
+		SortDistanceBufferAltUAV = RHICmdList.CreateUnorderedAccessView(
+			SortDistanceBufferAlt, FRHIViewDesc::CreateBufferUAV()
+				.SetType(FRHIViewDesc::EBufferType::Structured)
+				.SetStride(sizeof(uint32)));
+	}
+
+	// Radix sort histogram buffer: NumTiles * 256 entries
+	{
+		uint32 NumTiles = FMath::DivideAndRoundUp(PaddedCount, 1024u);
+		const uint32 BufferSize = NumTiles * 256 * sizeof(uint32);
+		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
+			TEXT("GaussianRadixHistogramBuffer"),
+			BufferSize,
+			sizeof(uint32),
+			BUF_UnorderedAccess | BUF_StructuredBuffer)
+			.SetInitialState(ERHIAccess::UAVCompute);
+		RadixHistogramBuffer = RHICmdList.CreateBuffer(Desc);
+		RadixHistogramBufferUAV = RHICmdList.CreateUnorderedAccessView(
+			RadixHistogramBuffer, FRHIViewDesc::CreateBufferUAV()
+				.SetType(FRHIViewDesc::EBufferType::Structured)
+				.SetStride(sizeof(uint32)));
+	}
+
+	// Radix sort digit offset buffer: 256 entries
+	{
+		const uint32 BufferSize = 256 * sizeof(uint32);
+		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
+			TEXT("GaussianRadixDigitOffsetBuffer"),
+			BufferSize,
+			sizeof(uint32),
+			BUF_UnorderedAccess | BUF_StructuredBuffer)
+			.SetInitialState(ERHIAccess::UAVCompute);
+		RadixDigitOffsetBuffer = RHICmdList.CreateBuffer(Desc);
+		RadixDigitOffsetBufferUAV = RHICmdList.CreateUnorderedAccessView(
+			RadixDigitOffsetBuffer, FRHIViewDesc::CreateBufferUAV()
 				.SetType(FRHIViewDesc::EBufferType::Structured)
 				.SetStride(sizeof(uint32)));
 	}

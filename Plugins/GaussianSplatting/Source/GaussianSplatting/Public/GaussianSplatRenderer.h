@@ -77,9 +77,9 @@ public:
 	);
 
 	/**
-	 * Dispatch bitonic sort for back-to-front ordering
+	 * Dispatch radix sort for back-to-front ordering
 	 */
-	static void DispatchSort(
+	static void DispatchRadixSort(
 		FRHICommandListImmediate& RHICmdList,
 		FGaussianSplatGPUResources* GPUResources,
 		int32 SplatCount
