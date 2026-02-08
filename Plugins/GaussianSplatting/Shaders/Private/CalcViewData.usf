@@ -134,6 +134,28 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		axis2 = float2(0.0, 0.01);  // Fallback to small fixed size
 	}
 
+	// Frustum culling: discard splats whose NDC bounding box is entirely off-screen.
+	// The quad spans center ± axis1 ± axis2, so its NDC bounding box extent is
+	// |axis1| + |axis2| per component. If this box doesn't overlap [-1,1], cull it.
+	// Saves sort bandwidth and rasterization for off-screen splats.
+	{
+		float2 ndcCenter = clipPos.xy / clipPos.w;
+		float2 ndcExtent = abs(axis1) + abs(axis2);
+
+		if (ndcCenter.x - ndcExtent.x > 1.0 || ndcCenter.x + ndcExtent.x < -1.0 ||
+			ndcCenter.y - ndcExtent.y > 1.0 || ndcCenter.y + ndcExtent.y < -1.0)
+		{
+			FGaussianSplatViewData viewData;
+			viewData.ClipPosition = float4(0, 0, 0, -1); // Mark invalid
+			viewData.PackedColorRG = 0;
+			viewData.PackedColorBA = 0;
+			viewData.Axis1 = float2(0, 0);
+			viewData.Axis2 = float2(0, 0);
+			ViewDataBuffer[splatIndex] = viewData;
+			return;
+		}
+	}
+
 	// Calculate view direction for SH
 	float3 viewDir = normalize(worldPos.xyz - CameraPosition);
 
