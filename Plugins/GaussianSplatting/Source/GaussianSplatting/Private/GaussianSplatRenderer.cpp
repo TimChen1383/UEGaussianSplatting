@@ -422,12 +422,13 @@ void FGaussianSplatRenderer::DrawSplats(
 	}
 	else
 	{
-		// Blend mode: InverseDestAlpha, One (for correct back-to-front blending with premultiplied alpha)
-		// This matches Unity's "Blend OneMinusDstAlpha One": result = src * (1 - dstAlpha) + dst
+		// Blend mode: Standard premultiplied alpha "over" for back-to-front compositing
+		// result = src + dst * (1 - srcAlpha)
+		// This properly attenuates the background behind splats
 		GraphicsPSOInit.BlendState = TStaticBlendState<
 			CW_RGBA,
-			BO_Add, BF_InverseDestAlpha, BF_One,  // Color: Src * (1 - DstAlpha) + Dst
-			BO_Add, BF_InverseDestAlpha, BF_One   // Alpha: same
+			BO_Add, BF_One, BF_InverseSourceAlpha,  // Color: Src + Dst * (1 - SrcAlpha)
+			BO_Add, BF_One, BF_InverseSourceAlpha   // Alpha: same
 		>::GetRHI();
 	}
 

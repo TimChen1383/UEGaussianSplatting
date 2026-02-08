@@ -166,8 +166,10 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		shColor = colorOpacity.rgb;
 	}
 
-	// Clamp color to valid range
-	float3 finalColor = max(shColor, 0.0);
+	// Clamp color to valid range and convert from sRGB to linear
+	// 3DGS SH coefficients are trained against sRGB images, so SH evaluation
+	// produces sRGB-space values. UE's SceneColor is linear, so we must convert.
+	float3 finalColor = pow(max(shColor, 0.0), 2.2);
 
 	// Pack and store view data
 	FGaussianSplatViewData viewData;
