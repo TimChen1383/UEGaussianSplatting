@@ -66,7 +66,6 @@ class FGaussianSplatCalcDistancesCS : public FGlobalShader
 		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, DistanceBuffer)
 		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, KeyBuffer)
 		SHADER_PARAMETER(uint32, SplatCount)
-		SHADER_PARAMETER(uint32, PaddedCount)
 	END_SHADER_PARAMETER_STRUCT()
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)

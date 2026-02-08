@@ -120,17 +120,36 @@ void FGaussianSplatRenderer::Render(
 	// Check if we have a valid ColorTexture for CalcViewData
 	bool bHasColorTexture = GPUResources->ColorTextureSRV.IsValid();
 
-	// Step 1: Calculate view data for each splat
-	// Pass flag indicating if ColorTexture is available
-	DispatchCalcViewData(RHICmdList, View, GPUResources, LocalToWorld, SplatCount, SHOrder, OpacityScale, SplatScale, bHasColorTexture);
+	// Camera-static sort skipping: skip entire compute pipeline when nothing has changed
+	FMatrix CurrentVP = View.ViewMatrices.GetViewProjectionMatrix();
+	bool bCanSkipCompute = GPUResources->bHasCachedSortData &&
+		GPUResources->CachedViewProjectionMatrix.Equals(CurrentVP, 0.0f) &&
+		GPUResources->CachedLocalToWorld.Equals(LocalToWorld, 0.0f) &&
+		GPUResources->CachedOpacityScale == OpacityScale &&
+		GPUResources->CachedSplatScale == SplatScale &&
+		GPUResources->CachedHasColorTexture == bHasColorTexture;
 
-	// Step 2: Calculate sort distances
-	DispatchCalcDistances(RHICmdList, GPUResources, SplatCount);
+	if (!bCanSkipCompute)
+	{
+		// Step 1: Calculate view data for each splat
+		DispatchCalcViewData(RHICmdList, View, GPUResources, LocalToWorld, SplatCount, SHOrder, OpacityScale, SplatScale, bHasColorTexture);
 
-	// Step 3: Sort splats back-to-front
-	DispatchRadixSort(RHICmdList, GPUResources, SplatCount);
+		// Step 2: Calculate sort distances
+		DispatchCalcDistances(RHICmdList, GPUResources, SplatCount);
 
-	// Step 4: Draw the splats
+		// Step 3: Sort splats back-to-front
+		DispatchRadixSort(RHICmdList, GPUResources, SplatCount);
+
+		// Update cache
+		GPUResources->CachedViewProjectionMatrix = CurrentVP;
+		GPUResources->CachedLocalToWorld = LocalToWorld;
+		GPUResources->CachedOpacityScale = OpacityScale;
+		GPUResources->CachedSplatScale = SplatScale;
+		GPUResources->CachedHasColorTexture = bHasColorTexture;
+		GPUResources->bHasCachedSortData = true;
+	}
+
+	// Step 4: Draw the splats (always — uses cached buffers when compute is skipped)
 	DrawSplats(RHICmdList, View, GPUResources, SplatCount, bDebugFixedSizeQuads, false, false, DebugQuadSize, nullptr);
 }
 
@@ -293,9 +312,6 @@ void FGaussianSplatRenderer::DispatchCalcDistances(
 		return;
 	}
 
-	// Pad to power of 2 for bitonic sort - need to initialize padding entries too
-	uint32 PaddedCount = NextPowerOfTwo(SplatCount);
-
 	// Transition buffers
 	RHICmdList.Transition(FRHITransitionInfo(GPUResources->SortDistanceBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
 	RHICmdList.Transition(FRHITransitionInfo(GPUResources->SortKeysBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
@@ -305,11 +321,10 @@ void FGaussianSplatRenderer::DispatchCalcDistances(
 	Parameters.DistanceBuffer = GPUResources->SortDistanceBufferUAV;
 	Parameters.KeyBuffer = GPUResources->SortKeysBufferUAV;
 	Parameters.SplatCount = SplatCount;
-	Parameters.PaddedCount = PaddedCount;
 
-	// Dispatch enough threads for PaddedCount to initialize padding entries
+	// Dispatch only for actual SplatCount — no power-of-2 padding needed for radix sort
 	const uint32 ThreadGroupSize = 256;
-	const uint32 NumGroups = FMath::DivideAndRoundUp(PaddedCount, ThreadGroupSize);
+	const uint32 NumGroups = FMath::DivideAndRoundUp((uint32)SplatCount, ThreadGroupSize);
 
 	SetComputePipelineState(RHICmdList, ComputeShader.GetComputeShader());
 	SetShaderParameters(RHICmdList, ComputeShader, ComputeShader.GetComputeShader(), Parameters);
@@ -336,8 +351,9 @@ void FGaussianSplatRenderer::DispatchRadixSort(
 		return;
 	}
 
-	uint32 PaddedCount = NextPowerOfTwo(SplatCount);
-	uint32 NumTiles = FMath::DivideAndRoundUp(PaddedCount, 1024u);
+	// Radix sort works with any count — no power-of-2 padding needed
+	uint32 SortCount = (uint32)SplatCount;
+	uint32 NumTiles = FMath::DivideAndRoundUp(SortCount, 1024u);
 
 	// Distance buffers: [0] = primary, [1] = alt
 	FUnorderedAccessViewRHIRef DistUAVs[2] = {
@@ -378,7 +394,7 @@ void FGaussianSplatRenderer::DispatchRadixSort(
 			Params.HistogramBuffer = GPUResources->RadixHistogramBufferUAV;
 			Params.SrcKeys = DistUAVs[SrcIdx];
 			Params.RadixShift = RadixShift;
-			Params.Count = PaddedCount;
+			Params.Count = SortCount;
 			Params.NumTiles = NumTiles;
 
 			SetComputePipelineState(RHICmdList, CountShader.GetComputeShader());
@@ -431,7 +447,7 @@ void FGaussianSplatRenderer::DispatchRadixSort(
 			Params.HistogramBuffer = GPUResources->RadixHistogramBufferUAV;
 			Params.DigitOffsetBuffer = GPUResources->RadixDigitOffsetBufferUAV;
 			Params.RadixShift = RadixShift;
-			Params.Count = PaddedCount;
+			Params.Count = SortCount;
 			Params.NumTiles = NumTiles;
 
 			SetComputePipelineState(RHICmdList, ScatterShader.GetComputeShader());
@@ -488,10 +504,11 @@ void FGaussianSplatRenderer::DrawSplats(
 		return;
 	}
 
-	// Only transition view data buffer if we're not in bypass/world-pos mode and have valid buffer
+	// Transition view data buffer for graphics reads.
+	// Use Unknown source: handles both fresh compute (SRVCompute) and cached (SRVGraphics) paths.
 	if (!bDebugBypassViewData && !bDebugWorldPositionTest && GPUResources->ViewDataBuffer.IsValid())
 	{
-		RHICmdList.Transition(FRHITransitionInfo(GPUResources->ViewDataBuffer, ERHIAccess::SRVCompute, ERHIAccess::SRVGraphics));
+		RHICmdList.Transition(FRHITransitionInfo(GPUResources->ViewDataBuffer, ERHIAccess::Unknown, ERHIAccess::SRVGraphics));
 	}
 
 	// Set up graphics pipeline state

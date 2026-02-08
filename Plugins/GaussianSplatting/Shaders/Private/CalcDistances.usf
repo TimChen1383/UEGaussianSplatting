@@ -10,7 +10,6 @@ StructuredBuffer<FGaussianSplatViewData> ViewDataBuffer;
 RWStructuredBuffer<uint> DistanceBuffer;
 RWStructuredBuffer<uint> KeyBuffer;
 uint SplatCount;
-uint PaddedCount;
 
 #ifndef THREADGROUP_SIZE
 #define THREADGROUP_SIZE 256
@@ -20,16 +19,8 @@ uint PaddedCount;
 void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 {
 	uint splatIndex = DispatchThreadId.x;
-	if (splatIndex >= PaddedCount)
-	{
-		return;
-	}
-
-	// Padding entries beyond actual splat count - sort to end
 	if (splatIndex >= SplatCount)
 	{
-		DistanceBuffer[splatIndex] = 0xFFFFFFFF;
-		KeyBuffer[splatIndex] = splatIndex;
 		return;
 	}
 
@@ -56,7 +47,6 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	// This ensures correct ordering for both positive and negative floats
 	depthBits ^= (-(int)(depthBits >> 31)) | 0x80000000;
 
-	// No inversion needed - UE's reversed-Z already gives the right order
 	DistanceBuffer[splatIndex] = depthBits;
 	KeyBuffer[splatIndex] = splatIndex;
 }

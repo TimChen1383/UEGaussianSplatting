@@ -142,6 +142,15 @@ private:
 
 	int32 SplatCount = 0;
 	bool bInitialized = false;
+
+public:
+	/** Cached state for camera-static sort skipping */
+	FMatrix CachedViewProjectionMatrix = FMatrix::Identity;
+	FMatrix CachedLocalToWorld = FMatrix::Identity;
+	float CachedOpacityScale = -1.0f;
+	float CachedSplatScale = -1.0f;
+	bool CachedHasColorTexture = false;
+	bool bHasCachedSortData = false;
 };
 
 /**
