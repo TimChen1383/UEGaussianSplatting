@@ -293,12 +293,13 @@ bool FPLYFileReader::ReadVertexData(const TArray<uint8>& FileData, const FPLYHea
 		// SH rest coefficients (bands 1-3)
 		for (int32 c = 0; c < GaussianSplattingConstants::NumSHCoefficients; c++)
 		{
-			// PLY stores SH in interleaved format: f_rest_0 to f_rest_44
-			// Each color channel has 15 coefficients
-			// Layout: RGB RGB RGB... (interleaved)
-			FString PropNameR = FString::Printf(TEXT("f_rest_%d"), c * 3 + 0);
-			FString PropNameG = FString::Printf(TEXT("f_rest_%d"), c * 3 + 1);
-			FString PropNameB = FString::Printf(TEXT("f_rest_%d"), c * 3 + 2);
+			// PLY stores SH in planar format (from save_ply: transpose(1,2).flatten())
+			// f_rest_0..14  = 15 coefficients for R channel
+			// f_rest_15..29 = 15 coefficients for G channel
+			// f_rest_30..44 = 15 coefficients for B channel
+			FString PropNameR = FString::Printf(TEXT("f_rest_%d"), c);
+			FString PropNameG = FString::Printf(TEXT("f_rest_%d"), c + GaussianSplattingConstants::NumSHCoefficients);
+			FString PropNameB = FString::Printf(TEXT("f_rest_%d"), c + GaussianSplattingConstants::NumSHCoefficients * 2);
 
 			Splat.SH[c].X = GetPropertyFloat(VertexData, Header, PropNameR);
 			Splat.SH[c].Y = GetPropertyFloat(VertexData, Header, PropNameG);

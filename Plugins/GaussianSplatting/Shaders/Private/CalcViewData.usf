@@ -39,6 +39,10 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	// Load splat data - Always Float32 format (simplified, most reliable)
 	float3 localPos = LoadPositionFloat32(PositionBuffer, splatIndex);
 
+	// MIRROR TEST: Uncomment to check if negating Y fixes left-right mirror
+	// If this fixes the mirror, the proper fix belongs in PLYFileReader.cpp importer
+	//localPos.y = -localPos.y;
+
 	float4 rotation = LoadRotation(OtherDataBuffer, splatIndex);
 	float3 scale = LoadScale(OtherDataBuffer, splatIndex) * SplatScale;
 
@@ -149,7 +153,8 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		float3 sh[15];
 		LoadSH(SHBuffer, splatIndex, 15, sh);
 
-		// Unity negates the view direction for SH evaluation
+		// Original 3DGS eval_sh expects outgoing direction (surface→camera)
+		// viewDir = worldPos - cameraPos = incident direction, so negate to get outgoing
 		float3 shDir = -viewDir_3DGS;
 
 		// SH DC is stored in color texture as: color = 0.5 + SH_C0 * DC
