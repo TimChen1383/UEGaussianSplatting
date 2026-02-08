@@ -148,7 +148,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		// Default color mode: use white (for debug visualization)
 		shColor = float3(1.0, 1.0, 1.0);
 	}
-	else if (SHOrder > 0)
+	else if (false && SHOrder > 0) // DEBUG: bypassed — using DC only to isolate SH issues
 	{
 		float3 sh[15];
 		LoadSH(SHBuffer, splatIndex, 15, sh);
@@ -167,7 +167,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	}
 	else
 	{
-		// Band 0 only - use color from texture
+		// Band 0 only - use color from texture (DC base color)
 		shColor = colorOpacity.rgb;
 	}
 
