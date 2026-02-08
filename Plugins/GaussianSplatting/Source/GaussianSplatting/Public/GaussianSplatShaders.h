@@ -66,6 +66,7 @@ class FGaussianSplatCalcDistancesCS : public FGlobalShader
 		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, DistanceBuffer)
 		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, KeyBuffer)
 		SHADER_PARAMETER(uint32, SplatCount)
+		SHADER_PARAMETER(uint32, PaddedCount)
 	END_SHADER_PARAMETER_STRUCT()
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
@@ -133,10 +134,9 @@ class FGaussianSplatBitonicSortCS : public FGlobalShader
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, DistanceBuffer)
 		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, KeyBuffer)
-		SHADER_PARAMETER(uint32, Level)
-		SHADER_PARAMETER(uint32, LevelMask)
-		SHADER_PARAMETER(uint32, Width)
-		SHADER_PARAMETER(uint32, Height)
+		SHADER_PARAMETER(uint32, CompareStep)
+		SHADER_PARAMETER(uint32, BlockSize)
+		SHADER_PARAMETER(uint32, Count)
 	END_SHADER_PARAMETER_STRUCT()
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)

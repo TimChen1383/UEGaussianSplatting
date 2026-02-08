@@ -2,69 +2,58 @@
 
 #include "/Engine/Public/Platform.ush"
 
-// Bitonic sort compute shader
+// XOR-based bitonic sort compute shader
 // Sorts key-value pairs where key is distance and value is splat index
 
 RWStructuredBuffer<uint> DistanceBuffer;
 RWStructuredBuffer<uint> KeyBuffer;
 
-uint Level;
-uint LevelMask;
-uint Width;
-uint Height;
+uint CompareStep;  // j: XOR mask for finding partner (power of 2)
+uint BlockSize;    // k: block size that determines sort direction (power of 2)
+uint Count;        // Total number of elements (PaddedCount, must be power of 2)
 
 #ifndef THREADGROUP_SIZE
 #define THREADGROUP_SIZE 256
 #endif
 
-// Shared memory for local sorting
-groupshared uint SharedKeys[THREADGROUP_SIZE * 2];
-groupshared uint SharedValues[THREADGROUP_SIZE * 2];
-
 [numthreads(THREADGROUP_SIZE, 1, 1)]
-void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID, uint3 GroupThreadId : SV_GroupThreadID)
+void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 {
-	uint totalElements = Width * Height;
-
-	// Each thread handles one comparison
-	uint idx = DispatchThreadId.x;
-
-	// Calculate partner index based on bitonic sort network
-	uint levelSize = 1u << Level;
-	uint halfLevelSize = levelSize >> 1;
-
-	// Determine which block we're in and our position within the block
-	uint blockId = idx / halfLevelSize;
-	uint posInBlock = idx % halfLevelSize;
-
-	// Calculate the two indices to compare
-	uint idx1 = blockId * levelSize + posInBlock;
-	uint idx2 = idx1 + halfLevelSize;
-
-	// Check bounds
-	if (idx2 >= totalElements)
+	uint i = DispatchThreadId.x;
+	if (i >= Count)
 	{
 		return;
 	}
 
-	// Load values
-	uint key1 = DistanceBuffer[idx1];
-	uint key2 = DistanceBuffer[idx2];
-	uint val1 = KeyBuffer[idx1];
-	uint val2 = KeyBuffer[idx2];
+	// Find partner by XOR with compare step
+	uint partner = i ^ CompareStep;
 
-	// Determine sort direction based on LevelMask
-	// For bitonic merge, alternating blocks sort in opposite directions
-	uint sortDir = ((idx1 / (LevelMask + 1)) % 2) == 0 ? 1 : 0;
+	// Only process each pair once (when partner > i) and check bounds
+	if (partner <= i || partner >= Count)
+	{
+		return;
+	}
+
+	// Load keys
+	uint key_i = DistanceBuffer[i];
+	uint key_partner = DistanceBuffer[partner];
+
+	// Sort direction: ascending when (i & BlockSize) == 0
+	bool ascending = ((i & BlockSize) == 0);
 
 	// Compare and swap if needed
-	bool shouldSwap = (sortDir == 1) ? (key1 > key2) : (key1 < key2);
+	bool shouldSwap = ascending ? (key_i > key_partner) : (key_i < key_partner);
 
 	if (shouldSwap)
 	{
-		DistanceBuffer[idx1] = key2;
-		DistanceBuffer[idx2] = key1;
-		KeyBuffer[idx1] = val2;
-		KeyBuffer[idx2] = val1;
+		// Swap distances
+		DistanceBuffer[i] = key_partner;
+		DistanceBuffer[partner] = key_i;
+
+		// Swap corresponding keys (splat indices)
+		uint val_i = KeyBuffer[i];
+		uint val_partner = KeyBuffer[partner];
+		KeyBuffer[i] = val_partner;
+		KeyBuffer[partner] = val_i;
 	}
 }

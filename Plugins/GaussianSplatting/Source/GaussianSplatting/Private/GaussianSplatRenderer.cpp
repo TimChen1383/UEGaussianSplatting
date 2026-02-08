@@ -293,6 +293,9 @@ void FGaussianSplatRenderer::DispatchCalcDistances(
 		return;
 	}
 
+	// Pad to power of 2 for bitonic sort - need to initialize padding entries too
+	uint32 PaddedCount = NextPowerOfTwo(SplatCount);
+
 	// Transition buffers
 	RHICmdList.Transition(FRHITransitionInfo(GPUResources->SortDistanceBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
 	RHICmdList.Transition(FRHITransitionInfo(GPUResources->SortKeysBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
@@ -302,9 +305,11 @@ void FGaussianSplatRenderer::DispatchCalcDistances(
 	Parameters.DistanceBuffer = GPUResources->SortDistanceBufferUAV;
 	Parameters.KeyBuffer = GPUResources->SortKeysBufferUAV;
 	Parameters.SplatCount = SplatCount;
+	Parameters.PaddedCount = PaddedCount;
 
+	// Dispatch enough threads for PaddedCount to initialize padding entries
 	const uint32 ThreadGroupSize = 256;
-	const uint32 NumGroups = FMath::DivideAndRoundUp((uint32)SplatCount, ThreadGroupSize);
+	const uint32 NumGroups = FMath::DivideAndRoundUp(PaddedCount, ThreadGroupSize);
 
 	SetComputePipelineState(RHICmdList, ComputeShader.GetComputeShader());
 	SetShaderParameters(RHICmdList, ComputeShader, ComputeShader.GetComputeShader(), Parameters);
@@ -330,23 +335,21 @@ void FGaussianSplatRenderer::DispatchSort(
 	// Pad to power of 2 for bitonic sort
 	uint32 PaddedCount = NextPowerOfTwo(SplatCount);
 
-	// Bitonic sort requires log2(N) stages
-	uint32 NumStages = FMath::FloorLog2(PaddedCount);
-
+	// Each thread handles one element, only half do comparisons per pass
 	const uint32 ThreadGroupSize = 256;
-	const uint32 NumGroups = FMath::DivideAndRoundUp(PaddedCount / 2, ThreadGroupSize);
+	const uint32 NumGroups = FMath::DivideAndRoundUp(PaddedCount, ThreadGroupSize);
 
-	for (uint32 Stage = 0; Stage < NumStages; Stage++)
+	// XOR-based bitonic sort: k is block size, j is compare step
+	for (uint32 k = 2; k <= PaddedCount; k <<= 1)
 	{
-		for (uint32 Pass = 0; Pass <= Stage; Pass++)
+		for (uint32 j = k >> 1; j > 0; j >>= 1)
 		{
 			FGaussianSplatBitonicSortCS::FParameters Parameters;
 			Parameters.DistanceBuffer = GPUResources->SortDistanceBufferUAV;
 			Parameters.KeyBuffer = GPUResources->SortKeysBufferUAV;
-			Parameters.Level = Stage - Pass;
-			Parameters.LevelMask = (1 << (Stage - Pass)) - 1;
-			Parameters.Width = PaddedCount;
-			Parameters.Height = 1;
+			Parameters.CompareStep = j;
+			Parameters.BlockSize = k;
+			Parameters.Count = PaddedCount;
 
 			SetComputePipelineState(RHICmdList, ComputeShader.GetComputeShader());
 			SetShaderParameters(RHICmdList, ComputeShader, ComputeShader.GetComputeShader(), Parameters);

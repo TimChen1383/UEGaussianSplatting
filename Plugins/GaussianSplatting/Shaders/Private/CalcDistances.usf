@@ -10,6 +10,7 @@ StructuredBuffer<FGaussianSplatViewData> ViewDataBuffer;
 RWStructuredBuffer<uint> DistanceBuffer;
 RWStructuredBuffer<uint> KeyBuffer;
 uint SplatCount;
+uint PaddedCount;
 
 #ifndef THREADGROUP_SIZE
 #define THREADGROUP_SIZE 256
@@ -19,8 +20,16 @@ uint SplatCount;
 void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 {
 	uint splatIndex = DispatchThreadId.x;
+	if (splatIndex >= PaddedCount)
+	{
+		return;
+	}
+
+	// Padding entries beyond actual splat count - sort to end
 	if (splatIndex >= SplatCount)
 	{
+		DistanceBuffer[splatIndex] = 0xFFFFFFFF;
+		KeyBuffer[splatIndex] = splatIndex;
 		return;
 	}
 
@@ -38,16 +47,16 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	// Calculate depth (Z/W for perspective, normalized to [0,1])
 	float depth = clipPos.z / clipPos.w;
 
-	// Convert to sortable uint
-	// We want back-to-front sorting, so invert the depth
-	// Also handle negative depths properly using bit manipulation
+	// Convert to sortable uint for back-to-front sorting
+	// UE uses reversed-Z: near=1, far=0. So ascending sort of depth values
+	// naturally gives back-to-front order (far/small values first, near/large values last).
 	uint depthBits = asuint(depth);
 
 	// Flip sign bit for proper float-to-sortable-uint conversion
 	// This ensures correct ordering for both positive and negative floats
 	depthBits ^= (-(int)(depthBits >> 31)) | 0x80000000;
 
-	// Invert for back-to-front (descending order)
-	DistanceBuffer[splatIndex] = ~depthBits;
+	// No inversion needed - UE's reversed-Z already gives the right order
+	DistanceBuffer[splatIndex] = depthBits;
 	KeyBuffer[splatIndex] = splatIndex;
 }

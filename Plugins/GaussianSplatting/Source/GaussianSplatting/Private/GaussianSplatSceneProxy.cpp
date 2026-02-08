@@ -203,6 +203,9 @@ void FGaussianSplatGPUResources::CreateStaticBuffers(FRHICommandListBase& RHICmd
 
 void FGaussianSplatGPUResources::CreateDynamicBuffers(FRHICommandListBase& RHICmdList)
 {
+	// Pad to power of 2 for bitonic sort
+	uint32 PaddedCount = FMath::RoundUpToPowerOfTwo(SplatCount);
+
 	// View data buffer (per-frame computed data)
 	{
 		const uint32 BufferSize = SplatCount * sizeof(FGaussianSplatViewData);
@@ -224,9 +227,9 @@ void FGaussianSplatGPUResources::CreateDynamicBuffers(FRHICommandListBase& RHICm
 				.SetStride(sizeof(FGaussianSplatViewData)));
 	}
 
-	// Sort distance buffer
+	// Sort distance buffer - sized to PaddedCount for bitonic sort
 	{
-		const uint32 BufferSize = SplatCount * sizeof(uint32);
+		const uint32 BufferSize = PaddedCount * sizeof(uint32);
 		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
 			TEXT("GaussianSortDistanceBuffer"),
 			BufferSize,
@@ -245,9 +248,9 @@ void FGaussianSplatGPUResources::CreateDynamicBuffers(FRHICommandListBase& RHICm
 				.SetStride(sizeof(uint32)));
 	}
 
-	// Sort keys buffer (double buffered for radix sort)
+	// Sort keys buffer - sized to PaddedCount for bitonic sort
 	{
-		const uint32 BufferSize = SplatCount * sizeof(uint32);
+		const uint32 BufferSize = PaddedCount * sizeof(uint32);
 
 		FRHIBufferCreateDesc Desc1 = FRHIBufferCreateDesc::Create(
 			TEXT("GaussianSortKeysBuffer"),
