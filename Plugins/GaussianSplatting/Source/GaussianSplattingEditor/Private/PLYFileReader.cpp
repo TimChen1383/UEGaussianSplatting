@@ -251,30 +251,30 @@ bool FPLYFileReader::ReadVertexData(const TArray<uint8>& FileData, const FPLYHea
 		const uint8* VertexData = DataPtr + static_cast<int64>(i) * Header.VertexStride;
 		FGaussianSplatData& Splat = OutSplats[i];
 
-		// Position - Convert from Y-up (OpenGL/3DGS) to Z-up (Unreal)
-		// PLY: X-right, Y-up, Z-forward -> UE: X-forward, Y-right, Z-up
+		// Position - Convert from Y-up (OpenGL/3DGS) to Z-up (Unreal) with handedness fix
+		// PLY: X-right, Y-up, Z-forward (right-handed) -> UE: X-forward, Y-right, Z-up (left-handed)
+		// Negate Y to convert from right-handed to left-handed (fixes left-right mirror)
 		float PlyX = GetPropertyFloat(VertexData, Header, TEXT("x"));
 		float PlyY = GetPropertyFloat(VertexData, Header, TEXT("y"));
 		float PlyZ = GetPropertyFloat(VertexData, Header, TEXT("z"));
-		Splat.Position.X = PlyZ;   // PLY Z -> UE X (forward)
-		Splat.Position.Y = PlyX;   // PLY X -> UE Y (right)
-		Splat.Position.Z = PlyY;   // PLY Y -> UE Z (up)
+		Splat.Position.X = PlyZ;    // PLY Z -> UE X (forward)
+		Splat.Position.Y = -PlyX;   // PLY X -> UE -Y (right, negated for handedness)
+		Splat.Position.Z = PlyY;    // PLY Y -> UE Z (up)
 
-		// Rotation (quaternion) - Convert coordinate system
-		// PLY uses (w, x, y, z) format with Y-up coordinate system
-		// UE uses Z-up: PLY_X->UE_Y, PLY_Y->UE_Z, PLY_Z->UE_X
+		// Rotation (quaternion) - Convert coordinate system with handedness fix
+		// PLY uses (w, x, y, z) format with Y-up right-handed coordinate system
+		// When negating one axis (Y), negate quaternion components perpendicular to it (X and Z)
 		float QW = GetPropertyFloat(VertexData, Header, TEXT("rot_0"));
 		float QX = GetPropertyFloat(VertexData, Header, TEXT("rot_1"));
 		float QY = GetPropertyFloat(VertexData, Header, TEXT("rot_2"));
 		float QZ = GetPropertyFloat(VertexData, Header, TEXT("rot_3"));
-		// Quaternion axis components transform like vectors
 		Splat.Rotation.W = QW;
-		Splat.Rotation.X = QZ;   // PLY Z -> UE X
-		Splat.Rotation.Y = QX;   // PLY X -> UE Y
-		Splat.Rotation.Z = QY;   // PLY Y -> UE Z
+		Splat.Rotation.X = -QZ;   // PLY Z -> UE X, negated for handedness
+		Splat.Rotation.Y = QX;    // PLY X -> UE Y (flipped axis, not negated)
+		Splat.Rotation.Z = -QY;   // PLY Y -> UE Z, negated for handedness
 
 		// Scale - Reorder to match coordinate system conversion
-		// Scale axes must match the rotation axis mapping
+		// Scale is always positive magnitude, no negation needed
 		float ScaleX = GetPropertyFloat(VertexData, Header, TEXT("scale_0"));
 		float ScaleY = GetPropertyFloat(VertexData, Header, TEXT("scale_1"));
 		float ScaleZ = GetPropertyFloat(VertexData, Header, TEXT("scale_2"));
