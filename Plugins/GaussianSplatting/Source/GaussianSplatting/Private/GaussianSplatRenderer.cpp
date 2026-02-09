@@ -516,7 +516,9 @@ void FGaussianSplatRenderer::DrawSplats(
 	RHICmdList.ApplyCachedRenderTargets(GraphicsPSOInit);
 
 	GraphicsPSOInit.RasterizerState = TStaticRasterizerState<FM_Solid, CM_None>::GetRHI();
-	GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_Always>::GetRHI();
+	// Depth test enabled (CF_DepthNearOrEqual) so splats are occluded by scene geometry
+	// Depth write disabled (false) because splats are transparent and blend among themselves
+	GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_DepthNearOrEqual>::GetRHI();
 
 	// Use different blend modes for debug vs normal rendering
 	if (bDebugFixedSizeQuads || bDebugBypassViewData || bDebugWorldPositionTest)
