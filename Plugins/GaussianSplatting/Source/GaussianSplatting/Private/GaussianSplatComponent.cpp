@@ -5,8 +5,6 @@
 #include "GaussianSplatSceneProxy.h"
 #include "GaussianSplatViewExtension.h"
 #include "Engine/World.h"
-#include "Components/InstancedStaticMeshComponent.h"
-#include "Engine/StaticMesh.h"
 
 UGaussianSplatComponent::UGaussianSplatComponent(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -38,20 +36,9 @@ void UGaussianSplatComponent::PostEditChangeProperty(FPropertyChangedEvent& Prop
 	}
 	else if (PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, SHOrder) ||
 			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, OpacityScale) ||
-			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, SplatScale) ||
-			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, bWireframe) ||
-			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, bDebugFixedSizeQuads) ||
-			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, bDebugBypassViewData) ||
-			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, bDebugWorldPositionTest) ||
-			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, DebugQuadSize))
+			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, SplatScale))
 	{
 		MarkRenderStateDirty();
-	}
-	else if (PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, bShowDebugPoints) ||
-			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, DebugPointSize) ||
-			 PropertyName == GET_MEMBER_NAME_CHECKED(UGaussianSplatComponent, MaxDebugPoints))
-	{
-		RebuildDebugPoints();
 	}
 
 	Super::PostEditChangeProperty(PropertyChangedEvent);
@@ -66,17 +53,10 @@ void UGaussianSplatComponent::OnRegister()
 	{
 		bBoundsCached = false;
 	}
-
-	// Create debug points if enabled
-	if (bShowDebugPoints)
-	{
-		RebuildDebugPoints();
-	}
 }
 
 void UGaussianSplatComponent::OnUnregister()
 {
-	DestroyDebugPointsComponent();
 	Super::OnUnregister();
 }
 
@@ -147,12 +127,6 @@ void UGaussianSplatComponent::OnAssetChanged()
 	bBoundsCached = false;
 	UpdateBounds();
 	MarkRenderStateDirty();
-
-	// Rebuild debug points if enabled
-	if (bShowDebugPoints)
-	{
-		RebuildDebugPoints();
-	}
 }
 
 void UGaussianSplatComponent::MarkRenderStateDirty()
@@ -163,115 +137,4 @@ void UGaussianSplatComponent::MarkRenderStateDirty()
 	{
 		Super::MarkRenderStateDirty();
 	}
-}
-
-void UGaussianSplatComponent::RebuildDebugPoints()
-{
-	if (bShowDebugPoints)
-	{
-		CreateDebugPointsComponent();
-		UpdateDebugPointInstances();
-	}
-	else
-	{
-		DestroyDebugPointsComponent();
-	}
-}
-
-void UGaussianSplatComponent::CreateDebugPointsComponent()
-{
-	if (DebugPointsISMC)
-	{
-		return; // Already exists
-	}
-
-	AActor* Owner = GetOwner();
-	if (!Owner)
-	{
-		return;
-	}
-
-	// Create the instanced static mesh component
-	DebugPointsISMC = NewObject<UInstancedStaticMeshComponent>(Owner, NAME_None, RF_Transient);
-	if (!DebugPointsISMC)
-	{
-		return;
-	}
-
-	// Load a simple cube mesh for debug visualization
-	UStaticMesh* CubeMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
-	if (CubeMesh)
-	{
-		DebugPointsISMC->SetStaticMesh(CubeMesh);
-	}
-
-	// Setup the component
-	DebugPointsISMC->SetMobility(EComponentMobility::Movable);
-	DebugPointsISMC->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-	DebugPointsISMC->SetCastShadow(false);
-	DebugPointsISMC->AttachToComponent(this, FAttachmentTransformRules::KeepRelativeTransform);
-	DebugPointsISMC->RegisterComponent();
-
-	UE_LOG(LogTemp, Log, TEXT("GaussianSplatComponent: Created debug points ISMC"));
-}
-
-void UGaussianSplatComponent::DestroyDebugPointsComponent()
-{
-	if (DebugPointsISMC)
-	{
-		DebugPointsISMC->DestroyComponent();
-		DebugPointsISMC = nullptr;
-		UE_LOG(LogTemp, Log, TEXT("GaussianSplatComponent: Destroyed debug points ISMC"));
-	}
-}
-
-void UGaussianSplatComponent::UpdateDebugPointInstances()
-{
-	if (!DebugPointsISMC || !SplatAsset || !SplatAsset->IsValid())
-	{
-		return;
-	}
-
-	// Clear existing instances
-	DebugPointsISMC->ClearInstances();
-
-	// Get decompressed positions from asset
-	TArray<FVector> Positions = SplatAsset->GetDecompressedPositions();
-
-	if (Positions.Num() == 0)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("GaussianSplatComponent: No positions found in asset"));
-		return;
-	}
-
-	// Determine how many points to show
-	int32 NumPointsToShow = Positions.Num();
-	if (MaxDebugPoints > 0 && MaxDebugPoints < NumPointsToShow)
-	{
-		NumPointsToShow = MaxDebugPoints;
-	}
-
-	// The cube mesh is 100 units by default, so we need to scale it down
-	// DebugPointSize is in world units, cube is 100 units, so scale = DebugPointSize / 100
-	const float BaseScale = DebugPointSize / 100.0f;
-	const FVector ScaleVector(BaseScale, BaseScale, BaseScale);
-
-	// Reserve instance data
-	TArray<FTransform> InstanceTransforms;
-	InstanceTransforms.Reserve(NumPointsToShow);
-
-	// Add instances for each point
-	for (int32 i = 0; i < NumPointsToShow; i++)
-	{
-		FTransform InstanceTransform;
-		InstanceTransform.SetLocation(Positions[i]);
-		InstanceTransform.SetScale3D(ScaleVector);
-		InstanceTransforms.Add(InstanceTransform);
-	}
-
-	// Batch add all instances
-	DebugPointsISMC->AddInstances(InstanceTransforms, false);
-
-	UE_LOG(LogTemp, Log, TEXT("GaussianSplatComponent: Created %d debug point instances (total splats: %d)"),
-		NumPointsToShow, Positions.Num());
 }

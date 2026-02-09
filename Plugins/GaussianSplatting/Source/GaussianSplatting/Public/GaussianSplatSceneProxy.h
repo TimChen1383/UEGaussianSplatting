@@ -94,22 +94,11 @@ public:
 	FTextureRHIRef DummyWhiteTexture;
 	FShaderResourceViewRHIRef DummyWhiteTextureSRV;
 
-	/** Debug position buffer for world position test */
-	FBufferRHIRef DebugPositionBuffer;
-	FShaderResourceViewRHIRef DebugPositionBufferSRV;
-
-	/** Debug "other data" buffer (rotation + scale) for world position test */
-	FBufferRHIRef DebugOtherDataBuffer;
-	FShaderResourceViewRHIRef DebugOtherDataBufferSRV;
-
 	/** Get a valid ColorTexture SRV (returns dummy if real one not available) */
 	FShaderResourceViewRHIRef GetColorTextureSRVOrDummy() const
 	{
 		return ColorTextureSRV.IsValid() ? ColorTextureSRV : DummyWhiteTextureSRV;
 	}
-
-	/** Check if debug buffers are valid */
-	bool HasDebugBuffers() const { return DebugPositionBufferSRV.IsValid() && DebugOtherDataBufferSRV.IsValid(); }
 
 	/** Position format used by this asset (Float32, Norm16, etc.) */
 	EGaussianPositionFormat PositionFormat = EGaussianPositionFormat::Float32;
@@ -129,9 +118,6 @@ private:
 
 	/** Create dummy white texture for fallback */
 	void CreateDummyWhiteTexture(FRHICommandListBase& RHICmdList);
-
-	/** Create debug position buffer for world position test */
-	void CreateDebugPositionBuffer(FRHICommandListBase& RHICmdList);
 
 private:
 	/** Cached asset data for initialization */
@@ -190,11 +176,6 @@ public:
 	int32 GetSHOrder() const { return SHOrder; }
 	float GetOpacityScale() const { return OpacityScale; }
 	float GetSplatScale() const { return SplatScale; }
-	bool IsWireframe() const { return bWireframe; }
-	bool IsDebugFixedSizeQuads() const { return bDebugFixedSizeQuads; }
-	bool IsDebugBypassViewData() const { return bDebugBypassViewData; }
-	bool IsDebugWorldPositionTest() const { return bDebugWorldPositionTest; }
-	float GetDebugQuadSize() const { return DebugQuadSize; }
 
 private:
 	/** GPU resources */
@@ -208,10 +189,5 @@ private:
 	int32 SHOrder = 3;
 	float OpacityScale = 1.0f;
 	float SplatScale = 1.0f;
-	bool bWireframe = false;
 	bool bEnableFrustumCulling = true;
-	bool bDebugFixedSizeQuads = false;
-	bool bDebugBypassViewData = false;
-	bool bDebugWorldPositionTest = false;
-	float DebugQuadSize = 0.01f;
 };

@@ -33,9 +33,6 @@ void FGaussianSplatGPUResources::Initialize(UGaussianSplatAsset* Asset)
 	// Store the position format from the asset (critical for shader to read correctly)
 	PositionFormat = Asset->PositionFormat;
 
-	UE_LOG(LogTemp, Log, TEXT("GaussianSplatGPUResources::Initialize - PositionFormat: %d (0=Float32, 1=Norm16)"),
-		static_cast<int32>(PositionFormat));
-
 	// Cache data for RHI initialization
 	CachedPositionData = Asset->PositionData;
 	CachedOtherData = Asset->OtherData;
@@ -95,10 +92,6 @@ void FGaussianSplatGPUResources::ReleaseRHI()
 	ColorTextureSRV.SafeRelease();
 	DummyWhiteTexture.SafeRelease();
 	DummyWhiteTextureSRV.SafeRelease();
-	DebugPositionBuffer.SafeRelease();
-	DebugPositionBufferSRV.SafeRelease();
-	DebugOtherDataBuffer.SafeRelease();
-	DebugOtherDataBufferSRV.SafeRelease();
 
 	bInitialized = false;
 }
@@ -360,9 +353,6 @@ void FGaussianSplatGPUResources::CreateIndexBuffer(FRHICommandListBase& RHICmdLi
 
 	// Create dummy white texture for fallback when ColorTexture isn't available
 	CreateDummyWhiteTexture(RHICmdList);
-
-	// Create debug position buffer for world position test mode
-	CreateDebugPositionBuffer(RHICmdList);
 }
 
 void FGaussianSplatGPUResources::CreateDummyWhiteTexture(FRHICommandListBase& RHICmdList)
@@ -387,84 +377,6 @@ void FGaussianSplatGPUResources::CreateDummyWhiteTexture(FRHICommandListBase& RH
 			.SetDimension(ETextureDimension::Texture2D));
 }
 
-void FGaussianSplatGPUResources::CreateDebugPositionBuffer(FRHICommandListBase& RHICmdList)
-{
-	// Define 7 test positions in local/world space
-	// These match the hardcoded values that were in the shader before
-	const int32 DebugSplatCount = 7;
-
-	// Position buffer: 3 floats * 4 bytes = 12 bytes per splat
-	TArray<FVector3f> DebugPositions;
-	DebugPositions.Add(FVector3f(0.0f, 0.0f, 0.0f));      // Origin - WHITE
-	DebugPositions.Add(FVector3f(100.0f, 0.0f, 0.0f));    // +X - RED
-	DebugPositions.Add(FVector3f(-100.0f, 0.0f, 0.0f));   // -X - DARK RED
-	DebugPositions.Add(FVector3f(0.0f, 100.0f, 0.0f));    // +Y - GREEN
-	DebugPositions.Add(FVector3f(0.0f, -100.0f, 0.0f));   // -Y - DARK GREEN
-	DebugPositions.Add(FVector3f(0.0f, 0.0f, 100.0f));    // +Z - BLUE
-	DebugPositions.Add(FVector3f(0.0f, 0.0f, -100.0f));   // -Z - DARK BLUE
-
-	// Create position buffer
-	{
-		const uint32 BufferSize = DebugSplatCount * sizeof(FVector3f);
-		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
-			TEXT("GaussianDebugPositionBuffer"),
-			BufferSize,
-			0,
-			BUF_Static | BUF_ShaderResource | BUF_ByteAddressBuffer)
-			.SetInitialState(ERHIAccess::SRVMask);
-		DebugPositionBuffer = RHICmdList.CreateBuffer(Desc);
-
-		void* Data = RHICmdList.LockBuffer(DebugPositionBuffer, 0, BufferSize, RLM_WriteOnly);
-		FMemory::Memcpy(Data, DebugPositions.GetData(), BufferSize);
-		RHICmdList.UnlockBuffer(DebugPositionBuffer);
-
-		DebugPositionBufferSRV = RHICmdList.CreateShaderResourceView(
-			DebugPositionBuffer, FRHIViewDesc::CreateBufferSRV()
-				.SetType(FRHIViewDesc::EBufferType::Raw));
-	}
-
-	// Create "other data" buffer (rotation + scale)
-	// OtherData layout: 4 floats rotation (quaternion) + 3 floats scale = 28 bytes per splat
-	// Using raw floats to ensure exact binary layout matching shader expectations
-	{
-		// 7 floats per splat: rotation (x,y,z,w) + scale (x,y,z)
-		TArray<float> DebugOtherData;
-		DebugOtherData.Reserve(DebugSplatCount * 7);
-
-		for (int32 i = 0; i < DebugSplatCount; ++i)
-		{
-			// Identity quaternion: (x=0, y=0, z=0, w=1)
-			DebugOtherData.Add(0.0f);  // Rotation X
-			DebugOtherData.Add(0.0f);  // Rotation Y
-			DebugOtherData.Add(0.0f);  // Rotation Z
-			DebugOtherData.Add(1.0f);  // Rotation W
-			// Unit scale
-			DebugOtherData.Add(1.0f);  // Scale X
-			DebugOtherData.Add(1.0f);  // Scale Y
-			DebugOtherData.Add(1.0f);  // Scale Z
-		}
-
-		const uint32 BufferSize = DebugOtherData.Num() * sizeof(float);  // 7 floats * 4 bytes * 7 splats = 196 bytes
-		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
-			TEXT("GaussianDebugOtherDataBuffer"),
-			BufferSize,
-			0,
-			BUF_Static | BUF_ShaderResource | BUF_ByteAddressBuffer)
-			.SetInitialState(ERHIAccess::SRVMask);
-		DebugOtherDataBuffer = RHICmdList.CreateBuffer(Desc);
-
-		void* Data = RHICmdList.LockBuffer(DebugOtherDataBuffer, 0, BufferSize, RLM_WriteOnly);
-		FMemory::Memcpy(Data, DebugOtherData.GetData(), BufferSize);
-		RHICmdList.UnlockBuffer(DebugOtherDataBuffer);
-
-		DebugOtherDataBufferSRV = RHICmdList.CreateShaderResourceView(
-			DebugOtherDataBuffer, FRHIViewDesc::CreateBufferSRV()
-				.SetType(FRHIViewDesc::EBufferType::Raw));
-	}
-
-	UE_LOG(LogTemp, Log, TEXT("Created debug position buffer with %d test splats"), DebugSplatCount);
-}
-
 //////////////////////////////////////////////////////////////////////////
 // FGaussianSplatSceneProxy
 
@@ -475,12 +387,7 @@ FGaussianSplatSceneProxy::FGaussianSplatSceneProxy(const UGaussianSplatComponent
 	, SHOrder(InComponent->SHOrder)
 	, OpacityScale(InComponent->OpacityScale)
 	, SplatScale(InComponent->SplatScale)
-	, bWireframe(InComponent->bWireframe)
 	, bEnableFrustumCulling(InComponent->bEnableFrustumCulling)
-	, bDebugFixedSizeQuads(InComponent->bDebugFixedSizeQuads)
-	, bDebugBypassViewData(InComponent->bDebugBypassViewData)
-	, bDebugWorldPositionTest(InComponent->bDebugWorldPositionTest)
-	, DebugQuadSize(InComponent->DebugQuadSize)
 {
 	bWillEverBeLit = false;
 }
@@ -521,8 +428,8 @@ void FGaussianSplatSceneProxy::GetDynamicMeshElements(
 	FMeshElementCollector& Collector) const
 {
 	// Gaussian splatting uses custom rendering via PostOpaqueRender delegate
-	// Only draw debug bounds when wireframe mode is enabled or when selected
-	if (!bWireframe && !IsSelected())
+	// Only draw debug bounds when selected
+	if (!IsSelected())
 	{
 		return;
 	}
@@ -534,18 +441,7 @@ void FGaussianSplatSceneProxy::GetDynamicMeshElements(
 			FPrimitiveDrawInterface* PDI = Collector.GetPDI(ViewIndex);
 
 			// Draw bounds when selected
-			if (IsSelected())
-			{
-				RenderBounds(PDI, ViewFamily.EngineShowFlags, GetBounds(), true);
-			}
-
-			// Draw wireframe box when wireframe mode is enabled
-			if (bWireframe)
-			{
-				const FBoxSphereBounds& ProxyBounds = GetBounds();
-				DrawWireBox(PDI, FBox(ProxyBounds.Origin - ProxyBounds.BoxExtent, ProxyBounds.Origin + ProxyBounds.BoxExtent),
-					FColor::Cyan, SDPG_World);
-			}
+			RenderBounds(PDI, ViewFamily.EngineShowFlags, GetBounds(), true);
 		}
 	}
 }
@@ -560,7 +456,8 @@ void FGaussianSplatSceneProxy::CreateRenderThreadResources(FRHICommandListBase& 
 		// Get color texture reference
 		if (CachedAsset->ColorTexture)
 		{
-			// Diagnostic: Check texture state
+			// If platform data exists but no resource, try to create it
+			FTextureResource* TextureResource = CachedAsset->ColorTexture->GetResource();
 			FTexturePlatformData* PlatformData = CachedAsset->ColorTexture->GetPlatformData();
 			int64 BulkDataSize = 0;
 			if (PlatformData && PlatformData->Mips.Num() > 0)
@@ -568,20 +465,9 @@ void FGaussianSplatSceneProxy::CreateRenderThreadResources(FRHICommandListBase& 
 				BulkDataSize = PlatformData->Mips[0].BulkData.GetBulkDataSize();
 			}
 
-			UE_LOG(LogTemp, Warning, TEXT("CreateRenderThreadResources: ColorTexture exists, SizeX=%d, SizeY=%d, PlatformData=%p, NumMips=%d, BulkDataSize=%lld"),
-				CachedAsset->ColorTexture->GetSizeX(),
-				CachedAsset->ColorTexture->GetSizeY(),
-				PlatformData,
-				PlatformData ? PlatformData->Mips.Num() : 0,
-				BulkDataSize);
-
-			// If platform data exists but no resource, try to create it
-			FTextureResource* TextureResource = CachedAsset->ColorTexture->GetResource();
 			if (!TextureResource && PlatformData && BulkDataSize > 0)
 			{
-				UE_LOG(LogTemp, Warning, TEXT("CreateRenderThreadResources: Calling UpdateResource() to create texture resource"));
 				CachedAsset->ColorTexture->UpdateResource();
-				// Re-check after UpdateResource
 				TextureResource = CachedAsset->ColorTexture->GetResource();
 			}
 
@@ -592,18 +478,7 @@ void FGaussianSplatSceneProxy::CreateRenderThreadResources(FRHICommandListBase& 
 					GPUResources->ColorTexture,
 					FRHIViewDesc::CreateTextureSRV()
 						.SetDimension(ETextureDimension::Texture2D));
-				UE_LOG(LogTemp, Warning, TEXT("CreateRenderThreadResources: ColorTexture SRV created successfully"));
 			}
-			else
-			{
-				UE_LOG(LogTemp, Warning, TEXT("CreateRenderThreadResources: ColorTexture resource not ready yet (Resource=%p, TextureRHI=%p)"),
-					TextureResource,
-					TextureResource ? TextureResource->TextureRHI.GetReference() : nullptr);
-			}
-		}
-		else
-		{
-			UE_LOG(LogTemp, Warning, TEXT("GaussianSplatSceneProxy: ColorTexture is null in asset"));
 		}
 
 		// Register with view extension for rendering
@@ -611,11 +486,6 @@ void FGaussianSplatSceneProxy::CreateRenderThreadResources(FRHICommandListBase& 
 		if (ViewExtension)
 		{
 			ViewExtension->RegisterProxy(const_cast<FGaussianSplatSceneProxy*>(this));
-			UE_LOG(LogTemp, Warning, TEXT("GaussianSplatSceneProxy: Registered with ViewExtension"));
-		}
-		else
-		{
-			UE_LOG(LogTemp, Error, TEXT("GaussianSplatSceneProxy: ViewExtension is NULL! Cannot register for rendering."));
 		}
 	}
 }
@@ -647,24 +517,14 @@ void FGaussianSplatSceneProxy::TryInitializeColorTexture(FRHICommandListBase& RH
 
 	if (!CachedAsset || !CachedAsset->ColorTexture)
 	{
-		// Log once why we can't initialize
-		static bool bLoggedMissingAsset = false;
-		if (!bLoggedMissingAsset)
-		{
-			UE_LOG(LogTemp, Warning, TEXT("TryInitializeColorTexture: CachedAsset=%p, ColorTexture=%p"),
-				CachedAsset, CachedAsset ? CachedAsset->ColorTexture.Get() : nullptr);
-			bLoggedMissingAsset = true;
-		}
 		return;
 	}
 
 	FTextureResource* TextureResource = CachedAsset->ColorTexture->GetResource();
 
-	// Log diagnostic info about texture state
-	static int32 LogCount = 0;
-	if (LogCount < 10) // Only log first 10 attempts
+	// If resource doesn't exist but platform data does, try to create it
+	if (!TextureResource)
 	{
-		// Check platform data and mip info
 		FTexturePlatformData* PlatformData = CachedAsset->ColorTexture->GetPlatformData();
 		int64 BulkDataSize = 0;
 		if (PlatformData && PlatformData->Mips.Num() > 0)
@@ -672,23 +532,11 @@ void FGaussianSplatSceneProxy::TryInitializeColorTexture(FRHICommandListBase& RH
 			BulkDataSize = PlatformData->Mips[0].BulkData.GetBulkDataSize();
 		}
 
-		UE_LOG(LogTemp, Warning, TEXT("TryInitializeColorTexture [%d]: Resource=%p, TextureRHI=%p, SizeX=%d, SizeY=%d, PlatformData=%p, BulkDataSize=%lld"),
-			LogCount,
-			TextureResource,
-			TextureResource ? TextureResource->TextureRHI.GetReference() : nullptr,
-			CachedAsset->ColorTexture->GetSizeX(),
-			CachedAsset->ColorTexture->GetSizeY(),
-			PlatformData,
-			BulkDataSize);
-
-		// If resource doesn't exist but platform data does, try to create it
-		if (!TextureResource && PlatformData && BulkDataSize > 0)
+		if (PlatformData && BulkDataSize > 0)
 		{
-			UE_LOG(LogTemp, Warning, TEXT("TryInitializeColorTexture: Calling UpdateResource() to create texture resource"));
 			CachedAsset->ColorTexture->UpdateResource();
+			TextureResource = CachedAsset->ColorTexture->GetResource();
 		}
-
-		LogCount++;
 	}
 
 	if (TextureResource && TextureResource->TextureRHI)
@@ -698,7 +546,5 @@ void FGaussianSplatSceneProxy::TryInitializeColorTexture(FRHICommandListBase& RH
 			GPUResources->ColorTexture,
 			FRHIViewDesc::CreateTextureSRV()
 				.SetDimension(ETextureDimension::Texture2D));
-
-		UE_LOG(LogTemp, Warning, TEXT("GaussianSplatSceneProxy: ColorTexture SRV initialized (deferred) - SUCCESS!"));
 	}
 }

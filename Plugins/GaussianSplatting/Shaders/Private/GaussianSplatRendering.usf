@@ -10,13 +10,7 @@
 StructuredBuffer<FGaussianSplatViewData> ViewDataBuffer;
 StructuredBuffer<uint> SortKeysBuffer;
 uint SplatCount;
-uint DebugMode;       // 0=normal, 1=fixed-size quads, 2=bypass grid, 3=world position test
-float DebugSplatSize; // Size in NDC space when debug mode is enabled
-float4x4 DebugWorldToClip; // For DebugMode 3: WorldToClip matrix
 #endif
-
-// Pixel shader uses DebugMode passed from vertex shader via interpolants
-// No additional PS-specific parameters needed
 
 // Vertex shader output / Pixel shader input
 struct FVertexOutput
@@ -24,7 +18,6 @@ struct FVertexOutput
 	float4 Position : SV_POSITION;
 	float2 LocalPos : TEXCOORD0;
 	float4 Color : TEXCOORD1;
-	nointerpolation uint DebugModeOut : TEXCOORD2; // Pass debug mode to pixel shader
 };
 
 // Vertex shader: generate quad from instance data
@@ -33,127 +26,12 @@ FVertexOutput MainVS(
 	uint InstanceId : SV_InstanceID)
 {
 	FVertexOutput Output;
-	Output.DebugModeOut = DebugMode;
 
 	// Quad corners based on vertex ID:
 	// 0=(-1,-1), 1=(1,-1), 2=(-1,1), 3=(1,1)
 	float2 corner;
 	corner.x = (VertexId & 1) ? 1.0 : -1.0;
 	corner.y = (VertexId & 2) ? 1.0 : -1.0;
-
-	// DebugMode == 2: Bypass everything, render grid of quads at fixed screen positions
-	// This tests if the draw call and pipeline work at all
-	if (DebugMode == 2)
-	{
-		// SIMPLE TEST: Just render ONE large red quad in the center of the screen
-		// If this doesn't show up, the draw call or pipeline is broken
-		if (InstanceId == 0)
-		{
-			// Large quad covering 40% of screen, centered
-			float2 offset = corner * 0.4;  // 40% of NDC space
-			Output.Position = float4(offset, 0.5, 1.0);
-			Output.LocalPos = corner;
-			Output.Color = float4(1.0, 0.0, 0.0, 1.0);  // Bright red
-			return Output;
-		}
-
-		// For other instances, render a small grid (only first 100 instances)
-		if (InstanceId < 100)
-		{
-			uint gridSize = 10;  // 10x10 grid
-			uint gridX = InstanceId % gridSize;
-			uint gridY = InstanceId / gridSize;
-
-			// Map to NDC space (-1 to 1)
-			float cellSize = 2.0 / float(gridSize);
-			float2 cellCenter = float2(
-				-1.0 + cellSize * (float(gridX) + 0.5),
-				-1.0 + cellSize * (float(gridY) + 0.5)
-			);
-
-			// Larger quads for visibility
-			float quadSize = 0.08;
-			float2 offset = corner * quadSize;
-
-			Output.Position = float4(cellCenter + offset, 0.5, 1.0);
-			Output.LocalPos = corner;
-
-			// Color based on grid position
-			Output.Color = float4(
-				float(gridX) / float(gridSize),
-				float(gridY) / float(gridSize),
-				0.5,
-				1.0
-			);
-			return Output;
-		}
-
-		// Hide remaining instances (degenerate triangle)
-		Output.Position = float4(0, 0, 0, 1);
-		Output.LocalPos = float2(0, 0);
-		Output.Color = float4(0, 0, 0, 0);
-		return Output;
-	}
-
-	// DebugMode == 3: Render quads at known WORLD positions
-	// This tests if WorldToClip matrix transformation is correct
-	// Renders 7 quads: origin + along each axis (±X, ±Y, ±Z)
-	if (DebugMode == 3)
-	{
-		// Define test positions in world space (centered around component origin)
-		float3 testPositions[7];
-		testPositions[0] = float3(0, 0, 0);      // Origin - WHITE
-		testPositions[1] = float3(100, 0, 0);    // +X - RED
-		testPositions[2] = float3(-100, 0, 0);   // -X - DARK RED
-		testPositions[3] = float3(0, 100, 0);    // +Y - GREEN
-		testPositions[4] = float3(0, -100, 0);   // -Y - DARK GREEN
-		testPositions[5] = float3(0, 0, 100);    // +Z - BLUE
-		testPositions[6] = float3(0, 0, -100);   // -Z - DARK BLUE
-
-		float4 testColors[7];
-		testColors[0] = float4(1, 1, 1, 1);      // WHITE - origin
-		testColors[1] = float4(1, 0, 0, 1);      // RED - +X
-		testColors[2] = float4(0.5, 0, 0, 1);    // DARK RED - -X
-		testColors[3] = float4(0, 1, 0, 1);      // GREEN - +Y
-		testColors[4] = float4(0, 0.5, 0, 1);    // DARK GREEN - -Y
-		testColors[5] = float4(0, 0, 1, 1);      // BLUE - +Z
-		testColors[6] = float4(0, 0, 0.5, 1);    // DARK BLUE - -Z
-
-		if (InstanceId < 7)
-		{
-			float3 worldPos = testPositions[InstanceId];
-
-			// Transform to clip space using the matrix
-			float4 clipPos = mul(float4(worldPos, 1.0), DebugWorldToClip);
-
-			// Check if behind camera
-			if (clipPos.w <= 0)
-			{
-				Output.Position = float4(0, 0, 0, 1);
-				Output.LocalPos = float2(0, 0);
-				Output.Color = float4(0, 0, 0, 0);
-				return Output;
-			}
-
-			// Convert to NDC
-			float2 ndc = clipPos.xy / clipPos.w;
-
-			// Add quad offset (fixed size in NDC)
-			float2 offset = corner * 0.05;  // 5% of NDC space
-
-			// Output clip position
-			Output.Position = float4((ndc + offset) * clipPos.w, clipPos.z, clipPos.w);
-			Output.LocalPos = corner;
-			Output.Color = testColors[InstanceId];
-			return Output;
-		}
-
-		// Hide remaining instances
-		Output.Position = float4(0, 0, 0, 1);
-		Output.LocalPos = float2(0, 0);
-		Output.Color = float4(0, 0, 0, 0);
-		return Output;
-	}
 
 	// Get sorted splat index
 	uint splatIndex = SortKeysBuffer[InstanceId];
@@ -172,33 +50,13 @@ FVertexOutput MainVS(
 	// NDC position of splat center
 	float2 ndc = viewData.ClipPosition.xy / viewData.ClipPosition.w;
 
-	// Calculate offset based on debug mode
-	float2 offset;
-	if (DebugMode == 1)
-	{
-		// Debug mode 1: use fixed-size quad at ViewDataBuffer positions
-		// DebugSplatSize is the half-size of the quad in NDC units
-		offset = corner * DebugSplatSize;
+	// Use covariance-based axes for quad offset
+	float2 offset = corner.x * viewData.Axis1 + corner.y * viewData.Axis2;
 
-		// Debug color: encode depth/position info for visualization
-		float normalizedIndex = float(InstanceId) / float(max(SplatCount, 1));
-		Output.Color = float4(
-			frac(normalizedIndex * 7.0),  // R: cycling pattern
-			1.0 - normalizedIndex,         // G: gradient from far to near (sorted order)
-			normalizedIndex,               // B: gradient from near to far
-			1.0                            // A: fully opaque
-		);
-	}
-	else
-	{
-		// Normal mode (DebugMode == 0): use covariance-based axes
-		offset = corner.x * viewData.Axis1 + corner.y * viewData.Axis2;
-
-		// Unpack color
-		float2 rg = UnpackHalf2x16(viewData.PackedColorRG);
-		float2 ba = UnpackHalf2x16(viewData.PackedColorBA);
-		Output.Color = float4(rg.x, rg.y, ba.x, ba.y);
-	}
+	// Unpack color
+	float2 rg = UnpackHalf2x16(viewData.PackedColorRG);
+	float2 ba = UnpackHalf2x16(viewData.PackedColorBA);
+	Output.Color = float4(rg.x, rg.y, ba.x, ba.y);
 
 	// Final clip position
 	Output.Position = float4(
@@ -215,14 +73,7 @@ FVertexOutput MainVS(
 // Pixel shader: Gaussian falloff with alpha blending
 float4 MainPS(FVertexOutput Input) : SV_Target
 {
-	// Debug mode: output solid color quads without gaussian falloff
-	if (Input.DebugModeOut > 0)
-	{
-		// Just output the color directly (no gaussian falloff, no premultiplied alpha)
-		return Input.Color;
-	}
-
-	// Normal mode: Gaussian falloff matching Unity's implementation
+	// Gaussian falloff matching Unity's implementation
 	// Unity uses exp(-dot(pos,pos)) where pos goes to ±2 at edges
 	// Our LocalPos goes to ±1 at edges, so we use exp(-4*distSq) to match
 	// At corner (1,1): distSq=2, exp(-8) ≈ 0.00034, matching Unity's exp(-8) at (2,2)

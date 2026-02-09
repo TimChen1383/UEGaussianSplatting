@@ -66,16 +66,6 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 	TArray<FGaussianSplatSceneProxy*> Proxies;
 	Ext->GetRegisteredProxies(Proxies);
 
-	// Debug logging
-	static int32 PostOpaqueLogCounter = 0;
-	bool bLogThisFrame = (PostOpaqueLogCounter < 5) || (PostOpaqueLogCounter % 60 == 0);
-	PostOpaqueLogCounter++;
-
-	if (bLogThisFrame)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("OnPostOpaqueRender_RenderThread: Proxies.Num()=%d"), Proxies.Num());
-	}
-
 	if (Proxies.Num() == 0)
 	{
 		return;
@@ -90,7 +80,6 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 
 	if (!ColorTexture)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("OnPostOpaqueRender: No ColorTexture available!"));
 		return;
 	}
 
@@ -112,7 +101,7 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 		RDG_EVENT_NAME("GaussianSplatRendering"),
 		PassParameters,
 		ERDGPassFlags::Raster,
-		[SceneView, Proxies, bLogThisFrame](FRHICommandListImmediate& RHICmdList)
+		[SceneView, Proxies](FRHICommandListImmediate& RHICmdList)
 		{
 			if (!SceneView)
 			{
@@ -138,79 +127,24 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 				Proxy->TryInitializeColorTexture(RHICmdList);
 
 				FGaussianSplatGPUResources* GPUResources = Proxy->GetGPUResources();
-				bool bDebugBypass = Proxy->IsDebugBypassViewData();
-				bool bDebugFixedSize = Proxy->IsDebugFixedSizeQuads();
-				bool bDebugWorldPos = Proxy->IsDebugWorldPositionTest();
 
-				// Debug logging
-				if (bLogThisFrame)
+				// Require full validation
+				if (!GPUResources || !GPUResources->IsValid())
 				{
-					bool bHasGPURes = GPUResources != nullptr;
-					bool bIsValid = GPUResources ? GPUResources->IsValid() : false;
-					bool bHasColorTex = GPUResources ? GPUResources->ColorTextureSRV.IsValid() : false;
-					bool bHasIndexBuf = GPUResources ? GPUResources->IndexBuffer.IsValid() : false;
-					bool bHasViewDataBuf = GPUResources ? GPUResources->ViewDataBuffer.IsValid() : false;
-					int32 SplatCount = GPUResources ? GPUResources->GetSplatCount() : 0;
-					UE_LOG(LogTemp, Warning, TEXT("  PostOpaque Proxy: bDebugBypass=%d, bDebugFixedSize=%d, GPURes=%d, IsValid=%d, ColorTex=%d, IndexBuf=%d, ViewDataBuf=%d, SplatCount=%d"),
-						bDebugBypass, bDebugFixedSize, bHasGPURes, bIsValid, bHasColorTex, bHasIndexBuf, bHasViewDataBuf, SplatCount);
+					continue;
 				}
 
-				// Validation depends on debug mode:
-				// - Normal mode: needs full IsValid() (including ColorTexture)
-				// - DebugFixedSize: needs compute buffers but can skip ColorTexture for colors (uses debug colors)
-				// - DebugBypass: only needs index buffer (skips compute entirely)
-				// - DebugWorldPos: only needs index buffer (renders hardcoded world positions)
-
-				if (bDebugBypass || bDebugWorldPos)
+				// Check visibility - frustum culling
+				const FBoxSphereBounds& Bounds = Proxy->GetBounds();
+				if (!SceneView->ViewFrustum.IntersectBox(Bounds.Origin, Bounds.BoxExtent))
 				{
-					// Debug bypass/world pos: only need index buffer
-					if (!GPUResources || !GPUResources->IndexBuffer.IsValid())
-					{
-						if (bLogThisFrame)
-						{
-							UE_LOG(LogTemp, Warning, TEXT("  Debug bypass/worldpos but no index buffer available"));
-						}
-						continue;
-					}
-				}
-				else if (bDebugFixedSize)
-				{
-					// Debug fixed size: need compute buffers but ColorTexture is optional
-					// We'll use default color if ColorTexture isn't available
-					if (!GPUResources || !GPUResources->IndexBuffer.IsValid() ||
-						!GPUResources->ViewDataBuffer.IsValid() || GPUResources->GetSplatCount() <= 0)
-					{
-						if (bLogThisFrame)
-						{
-							UE_LOG(LogTemp, Warning, TEXT("  Debug fixed size but missing required buffers"));
-						}
-						continue;
-					}
-				}
-				else
-				{
-					// Normal mode: require full validation
-					if (!GPUResources || !GPUResources->IsValid())
-					{
-						continue;
-					}
-				}
-
-				// Skip frustum culling for debug modes (bypass and world pos test)
-				if (!bDebugBypass && !bDebugWorldPos)
-				{
-					// Check visibility - frustum culling
-					const FBoxSphereBounds& Bounds = Proxy->GetBounds();
-					if (!SceneView->ViewFrustum.IntersectBox(Bounds.Origin, Bounds.BoxExtent))
-					{
-						continue;
-					}
+					continue;
 				}
 
 				// Get transform
 				FMatrix LocalToWorld = Proxy->GetLocalToWorld();
 
-				// Render this proxy with all parameters including debug modes
+				// Render this proxy
 				FGaussianSplatRenderer::Render(
 					RHICmdList,
 					*SceneView,
@@ -219,11 +153,7 @@ void FGaussianSplattingModule::OnPostOpaqueRender_RenderThread(FPostOpaqueRender
 					Proxy->GetSplatCount(),
 					Proxy->GetSHOrder(),
 					Proxy->GetOpacityScale(),
-					Proxy->GetSplatScale(),
-					Proxy->IsDebugFixedSizeQuads(),
-					bDebugBypass,
-					bDebugWorldPos,
-					Proxy->GetDebugQuadSize()
+					Proxy->GetSplatScale()
 				);
 			}
 		}

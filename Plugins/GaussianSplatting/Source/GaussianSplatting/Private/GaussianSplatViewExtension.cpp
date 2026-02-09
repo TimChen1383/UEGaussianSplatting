@@ -51,7 +51,6 @@ void FGaussianSplatViewExtension::RegisterProxy(FGaussianSplatSceneProxy* Proxy)
 	{
 		FScopeLock Lock(&ProxyLock);
 		RegisteredProxies.AddUnique(Proxy);
-		UE_LOG(LogTemp, Warning, TEXT("GaussianSplatViewExtension::RegisterProxy - Registered proxy, total count: %d"), RegisteredProxies.Num());
 	}
 }
 

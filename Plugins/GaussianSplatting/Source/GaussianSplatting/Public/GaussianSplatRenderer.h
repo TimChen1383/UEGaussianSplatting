@@ -32,11 +32,7 @@ public:
 		int32 SplatCount,
 		int32 SHOrder,
 		float OpacityScale,
-		float SplatScale,
-		bool bDebugFixedSizeQuads = false,
-		bool bDebugBypassViewData = false,
-		bool bDebugWorldPositionTest = false,
-		float DebugQuadSize = 0.01f
+		float SplatScale
 	);
 
 	/**
@@ -52,19 +48,6 @@ public:
 		float OpacityScale,
 		float SplatScale,
 		bool bHasColorTexture = true
-	);
-
-	/**
-	 * Dispatch the view data calculation compute shader using DEBUG position buffer
-	 * Used for testing the full CPU→GPU pipeline with known test positions
-	 */
-	static void DispatchCalcViewDataDebug(
-		FRHICommandListImmediate& RHICmdList,
-		const FSceneView& View,
-		FGaussianSplatGPUResources* GPUResources,
-		const FMatrix& LocalToWorld,
-		int32 DebugSplatCount,
-		float SplatScale
 	);
 
 	/**
@@ -92,12 +75,7 @@ public:
 		FRHICommandListImmediate& RHICmdList,
 		const FSceneView& View,
 		FGaussianSplatGPUResources* GPUResources,
-		int32 SplatCount,
-		bool bDebugFixedSizeQuads = false,
-		bool bDebugBypassViewData = false,
-		bool bDebugWorldPositionTest = false,
-		float DebugQuadSize = 0.01f,
-		const FMatrix* WorldToClip = nullptr
+		int32 SplatCount
 	);
 
 private:

@@ -42,77 +42,11 @@ void FGaussianSplatRenderer::Render(
 	int32 SplatCount,
 	int32 SHOrder,
 	float OpacityScale,
-	float SplatScale,
-	bool bDebugFixedSizeQuads,
-	bool bDebugBypassViewData,
-	bool bDebugWorldPositionTest,
-	float DebugQuadSize)
+	float SplatScale)
 {
-	// Debug bypass mode: skip all validation and render a fixed pattern
-	if (bDebugBypassViewData)
-	{
-		// Use a reasonable splat count for debug grid if we don't have real data
-		int32 DebugSplatCount = (SplatCount > 0) ? SplatCount : 1000;
-
-		SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatDebugBypass);
-		DrawSplats(RHICmdList, View, GPUResources, DebugSplatCount, false, true, false, DebugQuadSize, nullptr);
-		return;
-	}
-
-	// Debug world position test mode: run FULL PIPELINE with debug position data
-	// This tests the same CPU→GPU data path as real PLY data
-	if (bDebugWorldPositionTest)
-	{
-		if (!GPUResources || !GPUResources->HasDebugBuffers())
-		{
-			UE_LOG(LogTemp, Warning, TEXT("Debug world position test: no debug buffers available"));
-			return;
-		}
-
-		SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatDebugWorldPos);
-
-		const int32 DebugSplatCount = 7;
-
-		// Step 1: Calculate view data using DEBUG position buffer (not real PLY data)
-		DispatchCalcViewDataDebug(RHICmdList, View, GPUResources, LocalToWorld, DebugSplatCount, SplatScale);
-
-		// Step 2: Calculate sort distances
-		DispatchCalcDistances(RHICmdList, GPUResources, DebugSplatCount);
-
-		// Step 3: Sort splats back-to-front
-		DispatchRadixSort(RHICmdList, GPUResources, DebugSplatCount);
-
-		// Step 4: Draw the splats using DebugMode 1 (fixed size quads from ViewDataBuffer)
-		DrawSplats(RHICmdList, View, GPUResources, DebugSplatCount, true, false, false, DebugQuadSize, nullptr);
-		return;
-	}
-
-	// Require GPUResources for all non-bypass modes
-	if (!GPUResources)
+	if (!GPUResources || !GPUResources->IsValid() || SplatCount <= 0)
 	{
 		return;
-	}
-
-	if (SplatCount <= 0)
-	{
-		return;
-	}
-
-	// Debug fixed size mode: allow rendering without ColorTexture
-	// Normal mode: require full validation including ColorTexture
-	if (!bDebugFixedSizeQuads && !GPUResources->IsValid())
-	{
-		// Normal mode requires ColorTexture for proper colors
-		return;
-	}
-
-	// For debug fixed size, we need at least the basic buffers
-	if (bDebugFixedSizeQuads)
-	{
-		if (!GPUResources->ViewDataBuffer.IsValid() || !GPUResources->IndexBuffer.IsValid())
-		{
-			return;
-		}
 	}
 
 	SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatRendering);
@@ -150,7 +84,7 @@ void FGaussianSplatRenderer::Render(
 	}
 
 	// Step 4: Draw the splats (always — uses cached buffers when compute is skipped)
-	DrawSplats(RHICmdList, View, GPUResources, SplatCount, bDebugFixedSizeQuads, false, false, DebugQuadSize, nullptr);
+	DrawSplats(RHICmdList, View, GPUResources, SplatCount);
 }
 
 void FGaussianSplatRenderer::DispatchCalcViewData(
@@ -215,78 +149,6 @@ void FGaussianSplatRenderer::DispatchCalcViewData(
 	// Dispatch compute shader
 	const uint32 ThreadGroupSize = 256;
 	const uint32 NumGroups = FMath::DivideAndRoundUp((uint32)SplatCount, ThreadGroupSize);
-
-	SetComputePipelineState(RHICmdList, ComputeShader.GetComputeShader());
-	SetShaderParameters(RHICmdList, ComputeShader, ComputeShader.GetComputeShader(), Parameters);
-	RHICmdList.DispatchComputeShader(NumGroups, 1, 1);
-	UnsetShaderUAVs(RHICmdList, ComputeShader, ComputeShader.GetComputeShader());
-
-	// Transition buffer for next stage
-	RHICmdList.Transition(FRHITransitionInfo(GPUResources->ViewDataBuffer, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
-}
-
-void FGaussianSplatRenderer::DispatchCalcViewDataDebug(
-	FRHICommandListImmediate& RHICmdList,
-	const FSceneView& View,
-	FGaussianSplatGPUResources* GPUResources,
-	const FMatrix& LocalToWorld,
-	int32 DebugSplatCount,
-	float SplatScale)
-{
-	SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatCalcViewDataDebug);
-
-	TShaderMapRef<FGaussianSplatCalcViewDataCS> ComputeShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
-
-	if (!ComputeShader.IsValid())
-	{
-		UE_LOG(LogTemp, Warning, TEXT("FGaussianSplatCalcViewDataCS shader not valid"));
-		return;
-	}
-
-	// Transition buffers for compute
-	RHICmdList.Transition(FRHITransitionInfo(GPUResources->ViewDataBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
-
-	FGaussianSplatCalcViewDataCS::FParameters Parameters;
-
-	// Use DEBUG buffers instead of real PLY data buffers
-	Parameters.PositionBuffer = GPUResources->DebugPositionBufferSRV;
-	Parameters.OtherDataBuffer = GPUResources->DebugOtherDataBufferSRV;
-
-	// These are not used for debug mode, but shader requires them - use real or dummy
-	Parameters.SHBuffer = GPUResources->SHBufferSRV.IsValid() ? GPUResources->SHBufferSRV : GPUResources->DebugOtherDataBufferSRV;
-	Parameters.ChunkBuffer = GPUResources->ChunkBufferSRV;
-	Parameters.ColorTexture = GPUResources->GetColorTextureSRVOrDummy();
-	Parameters.ColorSampler = TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
-	Parameters.ViewDataBuffer = GPUResources->ViewDataBufferUAV;
-
-	// Matrices
-	Parameters.LocalToWorld = FMatrix44f(LocalToWorld);
-	Parameters.WorldToClip = FMatrix44f(View.ViewMatrices.GetViewProjectionMatrix());
-	Parameters.WorldToView = FMatrix44f(View.ViewMatrices.GetViewMatrix());
-	Parameters.CameraPosition = FVector3f(View.ViewMatrices.GetViewOrigin());
-
-	// Screen info
-	FIntRect ViewRect = View.UnscaledViewRect;
-	Parameters.ScreenSize = FVector2f(ViewRect.Width(), ViewRect.Height());
-
-	// Focal length approximation from projection matrix
-	const FMatrix& ProjMatrix = View.ViewMatrices.GetProjectionMatrix();
-	Parameters.FocalLength = FVector2f(
-		ProjMatrix.M[0][0] * ViewRect.Width() * 0.5f,
-		ProjMatrix.M[1][1] * ViewRect.Height() * 0.5f
-	);
-
-	Parameters.SplatCount = DebugSplatCount;
-	Parameters.SHOrder = 0;  // No SH for debug
-	Parameters.OpacityScale = 1.0f;
-	Parameters.SplatScale = SplatScale;
-	Parameters.ColorTextureSize = FIntPoint(1, 1);  // Dummy
-	Parameters.PositionFormat = 0;  // Float32 format for debug buffer
-	Parameters.UseDefaultColor = 1;  // Use default white color
-
-	// Dispatch compute shader
-	const uint32 ThreadGroupSize = 256;
-	const uint32 NumGroups = FMath::DivideAndRoundUp((uint32)DebugSplatCount, ThreadGroupSize);
 
 	SetComputePipelineState(RHICmdList, ComputeShader.GetComputeShader());
 	SetShaderParameters(RHICmdList, ComputeShader, ComputeShader.GetComputeShader(), Parameters);
@@ -470,28 +332,12 @@ void FGaussianSplatRenderer::DrawSplats(
 	FRHICommandListImmediate& RHICmdList,
 	const FSceneView& View,
 	FGaussianSplatGPUResources* GPUResources,
-	int32 SplatCount,
-	bool bDebugFixedSizeQuads,
-	bool bDebugBypassViewData,
-	bool bDebugWorldPositionTest,
-	float DebugQuadSize,
-	const FMatrix* WorldToClip)
+	int32 SplatCount)
 {
 	SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatDraw);
 
-	// Debug logging to verify this function is being called
-	static int32 LogCounter = 0;
-	if (LogCounter++ % 60 == 0)  // Log once per second at 60fps
-	{
-		int32 DebugMode = bDebugWorldPositionTest ? 3 : (bDebugBypassViewData ? 2 : (bDebugFixedSizeQuads ? 1 : 0));
-		UE_LOG(LogTemp, Warning, TEXT("GaussianSplat DrawSplats: SplatCount=%d, DebugMode=%d, GPUResources=%p"),
-			SplatCount, DebugMode, GPUResources);
-	}
-
-	// For debug bypass mode, we need at least the index buffer
 	if (!GPUResources || !GPUResources->IndexBuffer.IsValid())
 	{
-		UE_LOG(LogTemp, Warning, TEXT("GaussianSplat DrawSplats: No index buffer available"));
 		return;
 	}
 
@@ -500,13 +346,12 @@ void FGaussianSplatRenderer::DrawSplats(
 
 	if (!VertexShader.IsValid() || !PixelShader.IsValid())
 	{
-		UE_LOG(LogTemp, Warning, TEXT("Gaussian splat render shaders not valid"));
 		return;
 	}
 
 	// Transition view data buffer for graphics reads.
 	// Use Unknown source: handles both fresh compute (SRVCompute) and cached (SRVGraphics) paths.
-	if (!bDebugBypassViewData && !bDebugWorldPositionTest && GPUResources->ViewDataBuffer.IsValid())
+	if (GPUResources->ViewDataBuffer.IsValid())
 	{
 		RHICmdList.Transition(FRHITransitionInfo(GPUResources->ViewDataBuffer, ERHIAccess::Unknown, ERHIAccess::SRVGraphics));
 	}
@@ -520,23 +365,14 @@ void FGaussianSplatRenderer::DrawSplats(
 	// Depth write disabled (false) because splats are transparent and blend among themselves
 	GraphicsPSOInit.DepthStencilState = TStaticDepthStencilState<false, CF_DepthNearOrEqual>::GetRHI();
 
-	// Use different blend modes for debug vs normal rendering
-	if (bDebugFixedSizeQuads || bDebugBypassViewData || bDebugWorldPositionTest)
-	{
-		// Debug mode: simple opaque rendering (no blending) for clear visibility
-		GraphicsPSOInit.BlendState = TStaticBlendState<>::GetRHI();
-	}
-	else
-	{
-		// Blend mode: Standard premultiplied alpha "over" for back-to-front compositing
-		// result = src + dst * (1 - srcAlpha)
-		// This properly attenuates the background behind splats
-		GraphicsPSOInit.BlendState = TStaticBlendState<
-			CW_RGBA,
-			BO_Add, BF_One, BF_InverseSourceAlpha,  // Color: Src + Dst * (1 - SrcAlpha)
-			BO_Add, BF_One, BF_InverseSourceAlpha   // Alpha: same
-		>::GetRHI();
-	}
+	// Blend mode: Standard premultiplied alpha "over" for back-to-front compositing
+	// result = src + dst * (1 - srcAlpha)
+	// This properly attenuates the background behind splats
+	GraphicsPSOInit.BlendState = TStaticBlendState<
+		CW_RGBA,
+		BO_Add, BF_One, BF_InverseSourceAlpha,  // Color: Src + Dst * (1 - SrcAlpha)
+		BO_Add, BF_One, BF_InverseSourceAlpha   // Alpha: same
+	>::GetRHI();
 
 	GraphicsPSOInit.PrimitiveType = PT_TriangleList;
 	GraphicsPSOInit.BoundShaderState.VertexDeclarationRHI = GEmptyVertexDeclaration.VertexDeclarationRHI;
@@ -557,27 +393,14 @@ void FGaussianSplatRenderer::DrawSplats(
 	);
 
 	// Set vertex shader parameters
-	// DebugMode: 0=normal, 1=fixed-size quads at ViewDataBuffer positions, 2=bypass ViewDataBuffer entirely, 3=world position test
 	FGaussianSplatVS::FParameters VSParameters;
-	// For debug bypass mode, these SRVs may be null - the shader won't read them
 	VSParameters.ViewDataBuffer = GPUResources->ViewDataBufferSRV;
 	VSParameters.SortKeysBuffer = GPUResources->SortKeysBufferSRV;
 	VSParameters.SplatCount = SplatCount;
-	VSParameters.DebugMode = bDebugWorldPositionTest ? 3 : (bDebugBypassViewData ? 2 : (bDebugFixedSizeQuads ? 1 : 0));
-	VSParameters.DebugSplatSize = DebugQuadSize;
-	// Pass WorldToClip matrix for DebugMode 3 (world position test)
-	if (WorldToClip)
-	{
-		VSParameters.DebugWorldToClip = FMatrix44f(*WorldToClip);
-	}
-	else
-	{
-		VSParameters.DebugWorldToClip = FMatrix44f::Identity;
-	}
 
 	SetShaderParameters(RHICmdList, VertexShader, VertexShader.GetVertexShader(), VSParameters);
 
-	// Pixel shader parameters (debug mode is passed via vertex interpolants)
+	// Pixel shader parameters
 	FGaussianSplatPS::FParameters PSParameters;
 	SetShaderParameters(RHICmdList, PixelShader, PixelShader.GetPixelShader(), PSParameters);
 
