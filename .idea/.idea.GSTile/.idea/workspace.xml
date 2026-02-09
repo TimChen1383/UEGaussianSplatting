@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="AutoImportSettings">
+    <option name="autoReloadType" value="SELECTIVE" />
+  </component>
+  <component name="ChangeListManager">
+    <list default="true" id="612fdb8d-9c3a-46fe-8086-28fc3d6d2df4" name="Changes" comment="">
+      <change beforePath="$PROJECT_DIR$/Binaries/Win64/D3D12/x64/D3D12Core.dll" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Binaries/Win64/D3D12/x64/d3d12SDKLayers.dll" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Binaries/Win64/DML/x64/DirectML.dll" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Binaries/Win64/GSTileEditor.target" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Binaries/Win64/UnrealEditor-GSTile.dll" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Binaries/Win64/UnrealEditor-GSTile.pdb" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Binaries/Win64/UnrealEditor.modules" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Binaries/Win64/tbb12.dll" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Binaries/Win64/tbbmalloc.dll" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/Test/BP_GS.uasset" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/Test/TestLevel.umap" beforeDir="false" afterPath="$PROJECT_DIR$/Content/Test/TestLevel.umap" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/GSTile.sln" beforeDir="false" afterPath="$PROJECT_DIR$/GSTile.sln" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/GaussianSplatting/Binaries/Win64/UnrealEditor-GaussianSplatting.dll" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/GaussianSplatting/Binaries/Win64/UnrealEditor-GaussianSplatting.pdb" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/GaussianSplatting/Binaries/Win64/UnrealEditor-GaussianSplattingEditor.dll" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/GaussianSplatting/Binaries/Win64/UnrealEditor-GaussianSplattingEditor.pdb" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/GaussianSplatting/Binaries/Win64/UnrealEditor.modules" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/GaussianSplatting/Shaders/Private/CalcDistances.usf" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/GaussianSplatting/Shaders/Private/CalcDistances.usf" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/GaussianSplatting/Shaders/Private/CalcViewData.usf" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/GaussianSplatting/Shaders/Private/CalcViewData.usf" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/GaussianSplatting/Shaders/Private/GaussianDataTypes.ush" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/GaussianSplatting/Shaders/Private/GaussianDataTypes.ush" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/GaussianSplatting/Shaders/Private/GaussianSplatRendering.usf" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/GaussianSplatting/Shaders/Private/GaussianSplatRendering.usf" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/GaussianSplatting/Source/GaussianSplatting/Private/GaussianSplatAsset.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/GaussianSplatting/Source/GaussianSplatting/Private/GaussianSplatAsset.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/GaussianSplatting/Source/GaussianSplatting/Private/GaussianSplatComponent.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/GaussianSplatting/Source/GaussianSplatting/Private/GaussianSplatComponent.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/GaussianSplatting/Source/GaussianSplatting/Private/GaussianSplatRenderer.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/GaussianSplatting/Source/GaussianSplatting/Private/GaussianSplatRenderer.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/GaussianSplatting/Source/GaussianSplatting/Private/GaussianSplatSceneProxy.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/GaussianSplatting/Source/GaussianSplatting/Private/GaussianSplatSceneProxy.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/GaussianSplatting/Source/GaussianSplatting/Private/GaussianSplatViewExtension.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/GaussianSplatting/Source/GaussianSplatting/Private/GaussianSplatViewExtension.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/GaussianSplatting/Source/GaussianSplatting/Private/GaussianSplatting.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/GaussianSplatting/Source/GaussianSplatting/Private/GaussianSplatting.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/GaussianSplatting/Source/GaussianSplatting/Public/GaussianSplatAsset.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/GaussianSplatting/Source/GaussianSplatting/Public/GaussianSplatAsset.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/GaussianSplatting/Source/GaussianSplatting/Public/GaussianSplatComponent.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/GaussianSplatting/Source/GaussianSplatting/Public/GaussianSplatComponent.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/GaussianSplatting/Source/GaussianSplatting/Public/GaussianSplatRenderer.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/GaussianSplatting/Source/GaussianSplatting/Public/GaussianSplatRenderer.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/GaussianSplatting/Source/GaussianSplatting/Public/GaussianSplatSceneProxy.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/GaussianSplatting/Source/GaussianSplatting/Public/GaussianSplatSceneProxy.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/GaussianSplatting/Source/GaussianSplatting/Public/GaussianSplatShaders.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/GaussianSplatting/Source/GaussianSplatting/Public/GaussianSplatShaders.h" afterDir="false" />
+    </list>
+    <option name="SHOW_DIALOG" value="false" />
+    <option name="HIGHLIGHT_CONFLICTS" value="true" />
+    <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
+    <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="Git.Settings">
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+  </component>
+  <component name="ProjectColorInfo"><![CDATA[{
+  "associatedIndex": 3
+}]]></component>
+  <component name="ProjectId" id="399hp9TDldtiINy3VmaImey1cAB" />
+  <component name="ProjectViewState">
+    <option name="hideEmptyMiddlePackages" value="true" />
+    <option name="showLibraryContents" value="true" />
+  </component>
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "ModuleVcsDetector.initialDetectionPerformed": "true",
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "RunOnceActivity.git.unshallow": "true",
+    "git-widget-placeholder": "main",
+    "node.js.detected.package.eslint": "true",
+    "node.js.detected.package.tslint": "true",
+    "node.js.selected.package.eslint": "(autodetect)",
+    "node.js.selected.package.tslint": "(autodetect)",
+    "nodejs_package_manager_path": "npm",
+    "vue.rearranger.settings.migration": "true"
+  }
+}]]></component>
+  <component name="TaskManager">
+    <task active="true" id="Default" summary="Default task">
+      <changelist id="612fdb8d-9c3a-46fe-8086-28fc3d6d2df4" name="Changes" comment="" />
+      <created>1770114374943</created>
+      <option name="number" value="Default" />
+      <option name="presentableId" value="Default" />
+      <updated>1770114374943</updated>
+      <workItem from="1770114377286" duration="663000" />
+    </task>
+    <servers />
+  </component>
+  <component name="TypeScriptGeneratedFilesManager">
+    <option name="version" value="3" />
+  </component>
+  <component name="UnityProjectConfiguration" hasMinimizedUI="false" />
+  <component name="VcsManagerConfiguration">
+    <option name="CLEAR_INITIAL_COMMIT_MESSAGE" value="true" />
+  </component>
+  <component name="XDebuggerManager">
+    <breakpoint-manager>
+      <breakpoints>
+        <breakpoint enabled="true" type="DotNet_Exception_Breakpoints">
+          <properties exception="System.OperationCanceledException" breakIfHandledByOtherCode="false" displayValue="System.OperationCanceledException" />
+          <option name="timeStamp" value="1" />
+        </breakpoint>
+        <breakpoint enabled="true" type="DotNet_Exception_Breakpoints">
+          <properties exception="System.Threading.Tasks.TaskCanceledException" breakIfHandledByOtherCode="false" displayValue="System.Threading.Tasks.TaskCanceledException" />
+          <option name="timeStamp" value="2" />
+        </breakpoint>
+        <breakpoint enabled="true" type="DotNet_Exception_Breakpoints">
+          <properties exception="System.Threading.ThreadAbortException" breakIfHandledByOtherCode="false" displayValue="System.Threading.ThreadAbortException" />
+          <option name="timeStamp" value="3" />
+        </breakpoint>
+      </breakpoints>
+    </breakpoint-manager>
+  </component>
+</project>
