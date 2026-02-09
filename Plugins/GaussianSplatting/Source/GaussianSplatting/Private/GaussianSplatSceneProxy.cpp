@@ -448,6 +448,8 @@ void FGaussianSplatSceneProxy::GetDynamicMeshElements(
 
 void FGaussianSplatSceneProxy::CreateRenderThreadResources(FRHICommandListBase& RHICmdList)
 {
+	UE_LOG(LogTemp, Warning, TEXT("GaussianSplat: CreateRenderThreadResources called! SplatCount=%d"), SplatCount);
+
 	if (CachedAsset && CachedAsset->IsValid())
 	{
 		GPUResources = new FGaussianSplatGPUResources();
@@ -492,6 +494,8 @@ void FGaussianSplatSceneProxy::CreateRenderThreadResources(FRHICommandListBase& 
 
 void FGaussianSplatSceneProxy::DestroyRenderThreadResources()
 {
+	UE_LOG(LogTemp, Warning, TEXT("GaussianSplat: DestroyRenderThreadResources called!"));
+
 	// Unregister from view extension
 	FGaussianSplatViewExtension* ViewExtension = FGaussianSplatViewExtension::Get();
 	if (ViewExtension)

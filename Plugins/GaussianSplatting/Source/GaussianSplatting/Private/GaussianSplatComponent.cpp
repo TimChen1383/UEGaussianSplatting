@@ -47,6 +47,7 @@ void UGaussianSplatComponent::PostEditChangeProperty(FPropertyChangedEvent& Prop
 
 void UGaussianSplatComponent::OnRegister()
 {
+	UE_LOG(LogTemp, Warning, TEXT("GaussianSplat: OnRegister called!"));
 	Super::OnRegister();
 
 	if (SplatAsset)
@@ -57,6 +58,7 @@ void UGaussianSplatComponent::OnRegister()
 
 void UGaussianSplatComponent::OnUnregister()
 {
+	UE_LOG(LogTemp, Warning, TEXT("GaussianSplat: OnUnregister called!"));
 	Super::OnUnregister();
 }
 
@@ -67,6 +69,8 @@ void UGaussianSplatComponent::TickComponent(float DeltaTime, ELevelTick TickType
 
 FPrimitiveSceneProxy* UGaussianSplatComponent::CreateSceneProxy()
 {
+	UE_LOG(LogTemp, Warning, TEXT("GaussianSplat: CreateSceneProxy called!"));
+
 	if (!SplatAsset || !SplatAsset->IsValid())
 	{
 		return nullptr;
@@ -131,6 +135,8 @@ void UGaussianSplatComponent::OnAssetChanged()
 
 void UGaussianSplatComponent::MarkRenderStateDirty()
 {
+	UE_LOG(LogTemp, Warning, TEXT("GaussianSplat: MarkRenderStateDirty called!"));
+
 	MarkRenderDynamicDataDirty();
 
 	if (IsRegistered())
