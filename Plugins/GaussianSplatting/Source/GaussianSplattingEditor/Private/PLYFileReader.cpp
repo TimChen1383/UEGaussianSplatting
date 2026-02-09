@@ -254,12 +254,14 @@ bool FPLYFileReader::ReadVertexData(const TArray<uint8>& FileData, const FPLYHea
 		// Position - Convert from Y-up (OpenGL/3DGS) to Z-up (Unreal) with handedness fix
 		// PLY: X-right, Y-up, Z-forward (right-handed) -> UE: X-forward, Y-right, Z-up (left-handed)
 		// Negate Y to convert from right-handed to left-handed (fixes left-right mirror)
+		// Multiply by 100 to convert from meters (PLY) to centimeters (UE)
+		constexpr float MetersToUE = 100.0f;
 		float PlyX = GetPropertyFloat(VertexData, Header, TEXT("x"));
 		float PlyY = GetPropertyFloat(VertexData, Header, TEXT("y"));
 		float PlyZ = GetPropertyFloat(VertexData, Header, TEXT("z"));
-		Splat.Position.X = PlyZ;    // PLY Z -> UE X (forward)
-		Splat.Position.Y = -PlyX;   // PLY X -> UE -Y (right, negated for handedness)
-		Splat.Position.Z = PlyY;    // PLY Y -> UE Z (up)
+		Splat.Position.X = PlyZ * MetersToUE;    // PLY Z -> UE X (forward)
+		Splat.Position.Y = -PlyX * MetersToUE;   // PLY X -> UE -Y (right, negated for handedness)
+		Splat.Position.Z = PlyY * MetersToUE;    // PLY Y -> UE Z (up)
 
 		// Rotation (quaternion) - Convert coordinate system with handedness fix
 		// PLY uses (w, x, y, z) format with Y-up right-handed coordinate system
@@ -319,9 +321,11 @@ void FPLYFileReader::LinearizeSplatData(FGaussianSplatData& Splat)
 	Splat.Rotation = GaussianSplattingUtils::NormalizeQuat(Splat.Rotation);
 
 	// Apply exp to scale (PLY stores log-scale)
-	Splat.Scale.X = FMath::Exp(Splat.Scale.X);
-	Splat.Scale.Y = FMath::Exp(Splat.Scale.Y);
-	Splat.Scale.Z = FMath::Exp(Splat.Scale.Z);
+	// Then multiply by 100 to convert from meters (PLY) to centimeters (UE)
+	constexpr float MetersToUE = 100.0f;
+	Splat.Scale.X = FMath::Exp(Splat.Scale.X) * MetersToUE;
+	Splat.Scale.Y = FMath::Exp(Splat.Scale.Y) * MetersToUE;
+	Splat.Scale.Z = FMath::Exp(Splat.Scale.Z) * MetersToUE;
 
 	// Apply sigmoid to opacity
 	Splat.Opacity = GaussianSplattingUtils::Sigmoid(Splat.Opacity);
