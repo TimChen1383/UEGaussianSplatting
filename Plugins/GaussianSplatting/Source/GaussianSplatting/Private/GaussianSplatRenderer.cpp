@@ -543,6 +543,17 @@ void FGaussianSplatRenderer::DrawSplats(
 
 	SetGraphicsPipelineState(RHICmdList, GraphicsPSOInit, 0);
 
+	// Set viewport to match the view rect - critical for correct rendering when viewport is resized
+	FIntRect ViewRect = View.UnscaledViewRect;
+	RHICmdList.SetViewport(
+		ViewRect.Min.X,
+		ViewRect.Min.Y,
+		0.0f,
+		ViewRect.Max.X,
+		ViewRect.Max.Y,
+		1.0f
+	);
+
 	// Set vertex shader parameters
 	// DebugMode: 0=normal, 1=fixed-size quads at ViewDataBuffer positions, 2=bypass ViewDataBuffer entirely, 3=world position test
 	FGaussianSplatVS::FParameters VSParameters;
