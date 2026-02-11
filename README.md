@@ -15,8 +15,7 @@ This project primarily aims to solve this issue.
 - [x] Render splats at given postiion
 - [x] Add efficient sorting algorith: Radix Sort
 - [x] Render color and alpha blending
-- [ ] Hook render result into Unreal Engine's render pipeline: before post process
-- [ ] It can render gaussian splatting now
+- [x] Hook render result into Unreal Engine's render pipeline: before post process
 - [ ] Dynamic load and unload macro tiles
 - [ ] Dynamic switching micro LOD 
 
