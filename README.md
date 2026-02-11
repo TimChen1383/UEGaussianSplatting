@@ -8,6 +8,7 @@ Unreal Engine has the feature like Nanite for handling high poly/large scale mes
 However, currently there isn't any solution for handling high density/large scale gaussian splats.
 This project primarily aims to solve this issue.
 
+## Temporary Result
 
 ## To Do List
 - [x] Import, process PLY file and save as uasset
@@ -30,4 +31,4 @@ This project primarily aims to solve this issue.
 <img width="927" height="475" alt="GaussianSplatActorAssign" src="https://github.com/user-attachments/assets/00083594-29b4-4706-90ce-af19e6ff6ba7" />
 
 
-## Temporary Result
+
