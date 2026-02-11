@@ -1,11 +1,15 @@
 # UEGaussianSplatting (WIP)
 
-caution, still work in progress
+> Still Work In Progress! Not Done Yet!
 
-## abstrat
-I have an issue when loading large scale GS.
-The computer will have
+## Abstrat
+Loading and rendering highly detailed large scale assets in 3D software is always a challenge.
+Unreal Engine has the feature like Nanite for handling high poly/large scale mesh.
+However, currently there isn't any solution for handling high density/large scale gaussian splats.
+This project primarily aims to solve this issue.
 
+
+## To Do List
 - [x] Import, process PLY file and save as uasset
 - [x] Render splats at given postiion
 - [x] Add efficient sorting algorith: Radix Sort
