@@ -2,7 +2,7 @@
 
 > Still Work In Progress! Not Done Yet!
 
-## Abstrat
+## Overview
 Loading and rendering highly detailed large scale assets in 3D software is always a big challenge.
 Unreal Engine has the feature like Nanite for handling high poly/large scale mesh.
 However, currently there isn't any solution for handling high density/large scale gaussian splats.
