@@ -18,3 +18,5 @@ This project primarily aims to solve this issue.
 - [ ] It can render gaussian splatting now
 - [ ] Dynamic load and unload macro tiles
 - [ ] Dynamic switching micro LOD 
+
+## Temporary Result
