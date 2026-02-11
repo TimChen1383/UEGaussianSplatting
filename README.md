@@ -16,6 +16,7 @@ This project primarily aims to solve this issue.
 - [x] Add efficient sorting algorith: Radix Sort
 - [x] Render color and alpha blending
 - [x] Hook render result into Unreal Engine's render pipeline: before post process
+- [ ] Speed up serialize and deserialize process
 - [ ] Dynamic load and unload macro tiles
 - [ ] Dynamic switching micro LOD 
 
