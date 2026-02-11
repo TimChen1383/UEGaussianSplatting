@@ -6,7 +6,7 @@
 Loading and rendering highly detailed large scale assets in 3D software is always a big challenge.
 Unreal Engine has the feature like Nanite for handling high poly/large scale mesh.
 However, currently there isn't any solution for handling high density/large scale gaussian splats.
-This project primarily aims to solve this issue.
+This project primarily aims to solve this issue though dynamic streaming methods.
 
 ## Temporary Result
 - 1 million gaussian splats in 120 fps
