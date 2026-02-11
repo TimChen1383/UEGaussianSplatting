@@ -9,6 +9,9 @@ However, currently there isn't any solution for handling high density/large scal
 This project primarily aims to solve this issue.
 
 ## Temporary Result
+- 1 million gaussian splats in 120 fps
+![Temp](https://github.com/user-attachments/assets/71afa392-4e3d-49e1-ae3b-5cebe31621a8)
+
 
 ## To Do List
 - [x] Import, process PLY file and save as uasset
