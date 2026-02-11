@@ -33,10 +33,10 @@ void FGaussianSplatGPUResources::Initialize(UGaussianSplatAsset* Asset)
 	// Store the position format from the asset (critical for shader to read correctly)
 	PositionFormat = Asset->PositionFormat;
 
-	// Cache data for RHI initialization
-	CachedPositionData = Asset->PositionData;
-	CachedOtherData = Asset->OtherData;
-	CachedSHData = Asset->SHData;
+	// Cache data for RHI initialization (copy from bulk data)
+	Asset->GetPositionData(CachedPositionData);
+	Asset->GetOtherData(CachedOtherData);
+	Asset->GetSHData(CachedSHData);
 	CachedChunkData = Asset->ChunkData;
 
 	// Initialize render resource

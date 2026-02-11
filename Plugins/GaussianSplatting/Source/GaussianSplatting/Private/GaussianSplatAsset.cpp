@@ -13,39 +13,139 @@ void UGaussianSplatAsset::Serialize(FArchive& Ar)
 {
 	Super::Serialize(Ar);
 
-	Ar << SplatCount;
-	Ar << BoundingBox;
-	Ar << PositionFormat;
-	Ar << ColorFormat;
-	Ar << SHFormat;
-	Ar << SHBands;
-	Ar << PositionData;
-	Ar << OtherData;
-	Ar << SHData;
-	Ar << ChunkData;
-	Ar << SourceFilePath;
-	Ar << ImportQuality;
-	Ar << ColorTextureData;
-	Ar << ColorTextureWidth;
-	Ar << ColorTextureHeight;
+	int32 Version = 1;  // Default to V1 for old assets
+
+	if (Ar.IsSaving())
+	{
+		// When saving, write magic + version header
+		int32 Magic = GAUSSIAN_SPLAT_ASSET_MAGIC;
+		Version = GAUSSIAN_SPLAT_ASSET_VERSION;
+		Ar << Magic;
+		Ar << Version;
+	}
+	else if (Ar.IsLoading())
+	{
+		// When loading, check for magic header to detect version
+		int32 FirstValue = 0;
+		Ar << FirstValue;
+
+		if (FirstValue == GAUSSIAN_SPLAT_ASSET_MAGIC)
+		{
+			// New format with magic header
+			Ar << Version;
+		}
+		else
+		{
+			// Old V1 format - FirstValue is actually SplatCount
+			Version = 1;
+			SplatCount = FirstValue;
+		}
+	}
+
+	if (Version >= 2)
+	{
+		// Version 2+: Read/write metadata normally
+		Ar << SplatCount;
+		Ar << BoundingBox;
+		Ar << PositionFormat;
+		Ar << ColorFormat;
+		Ar << SHFormat;
+		Ar << SHBands;
+		Ar << SourceFilePath;
+		Ar << ImportQuality;
+		Ar << ColorTextureWidth;
+		Ar << ColorTextureHeight;
+		Ar << ChunkData;
+
+		// Use bulk data for large arrays
+		// These are stored in separate .ubulk files and can be memory-mapped
+		PositionBulkData.Serialize(Ar, this);
+		OtherBulkData.Serialize(Ar, this);
+		SHBulkData.Serialize(Ar, this);
+		ColorTextureBulkData.Serialize(Ar, this);
+	}
+	else
+	{
+		// Version 1: Legacy TArray format
+		// Note: SplatCount was already read above as FirstValue
+		Ar << BoundingBox;
+		Ar << PositionFormat;
+		Ar << ColorFormat;
+		Ar << SHFormat;
+		Ar << SHBands;
+
+		TArray<uint8> LegacyPositionData;
+		TArray<uint8> LegacyOtherData;
+		TArray<uint8> LegacySHData;
+		TArray<uint8> LegacyColorTextureData;
+
+		Ar << LegacyPositionData;
+		Ar << LegacyOtherData;
+		Ar << LegacySHData;
+		Ar << ChunkData;
+		Ar << SourceFilePath;
+		Ar << ImportQuality;
+		Ar << LegacyColorTextureData;
+		Ar << ColorTextureWidth;
+		Ar << ColorTextureHeight;
+
+		if (Ar.IsLoading())
+		{
+			// Convert legacy data to bulk data
+			if (LegacyPositionData.Num() > 0)
+			{
+				PositionBulkData.Lock(LOCK_READ_WRITE);
+				void* Data = PositionBulkData.Realloc(LegacyPositionData.Num());
+				FMemory::Memcpy(Data, LegacyPositionData.GetData(), LegacyPositionData.Num());
+				PositionBulkData.Unlock();
+			}
+
+			if (LegacyOtherData.Num() > 0)
+			{
+				OtherBulkData.Lock(LOCK_READ_WRITE);
+				void* Data = OtherBulkData.Realloc(LegacyOtherData.Num());
+				FMemory::Memcpy(Data, LegacyOtherData.GetData(), LegacyOtherData.Num());
+				OtherBulkData.Unlock();
+			}
+
+			if (LegacySHData.Num() > 0)
+			{
+				SHBulkData.Lock(LOCK_READ_WRITE);
+				void* Data = SHBulkData.Realloc(LegacySHData.Num());
+				FMemory::Memcpy(Data, LegacySHData.GetData(), LegacySHData.Num());
+				SHBulkData.Unlock();
+			}
+
+			if (LegacyColorTextureData.Num() > 0)
+			{
+				ColorTextureBulkData.Lock(LOCK_READ_WRITE);
+				void* Data = ColorTextureBulkData.Realloc(LegacyColorTextureData.Num());
+				FMemory::Memcpy(Data, LegacyColorTextureData.GetData(), LegacyColorTextureData.Num());
+				ColorTextureBulkData.Unlock();
+			}
+
+			UE_LOG(LogTemp, Log, TEXT("GaussianSplatAsset: Converted legacy v1 asset to v2 bulk data format"));
+		}
+	}
 }
 
 void UGaussianSplatAsset::PostLoad()
 {
 	Super::PostLoad();
 
-	UE_LOG(LogTemp, Log, TEXT("GaussianSplatAsset::PostLoad - SplatCount=%d, ColorTextureData.Num()=%d, Width=%d, Height=%d"),
-		SplatCount, ColorTextureData.Num(), ColorTextureWidth, ColorTextureHeight);
+	const int64 ColorDataSize = ColorTextureBulkData.GetBulkDataSize();
+	UE_LOG(LogTemp, Log, TEXT("GaussianSplatAsset::PostLoad - SplatCount=%d, ColorTextureBulkData.Size=%lld, Width=%d, Height=%d"),
+		SplatCount, ColorDataSize, ColorTextureWidth, ColorTextureHeight);
 
-	// Recreate the ColorTexture from the stored raw data
-	if (ColorTextureData.Num() > 0 && ColorTextureWidth > 0 && ColorTextureHeight > 0)
+	// Recreate the ColorTexture from the stored bulk data
+	if (ColorDataSize > 0 && ColorTextureWidth > 0 && ColorTextureHeight > 0)
 	{
 		CreateColorTextureFromData();
 		UE_LOG(LogTemp, Log, TEXT("GaussianSplatAsset::PostLoad - ColorTexture recreated successfully"));
 	}
 	else
 	{
-		UE_LOG(LogTemp, Warning, TEXT("GaussianSplatAsset::PostLoad - No ColorTextureData to restore (might be old asset format)"));
+		UE_LOG(LogTemp, Warning, TEXT("GaussianSplatAsset::PostLoad - No ColorTextureBulkData to restore (might be old asset format)"));
 	}
 }
 
@@ -60,11 +160,11 @@ int64 UGaussianSplatAsset::GetMemoryUsage() const
 {
 	int64 TotalBytes = 0;
 
-	TotalBytes += PositionData.Num();
-	TotalBytes += OtherData.Num();
-	TotalBytes += SHData.Num();
+	TotalBytes += PositionBulkData.GetBulkDataSize();
+	TotalBytes += OtherBulkData.GetBulkDataSize();
+	TotalBytes += SHBulkData.GetBulkDataSize();
 	TotalBytes += ChunkData.Num() * sizeof(FGaussianChunkInfo);
-	TotalBytes += ColorTextureData.Num();
+	TotalBytes += ColorTextureBulkData.GetBulkDataSize();
 
 	if (ColorTexture)
 	{
@@ -168,13 +268,16 @@ TArray<FVector> UGaussianSplatAsset::GetDecompressedPositions() const
 {
 	TArray<FVector> Positions;
 
-	if (SplatCount == 0 || PositionData.Num() == 0)
+	const int64 DataSize = PositionBulkData.GetBulkDataSize();
+	if (SplatCount == 0 || DataSize == 0)
 	{
 		return Positions;
 	}
 
 	Positions.SetNum(SplatCount);
-	const uint8* DataPtr = PositionData.GetData();
+
+	// Lock bulk data for reading
+	const uint8* DataPtr = static_cast<const uint8*>(PositionBulkData.LockReadOnly());
 
 	// Simplified: Always Float32 format (12 bytes per position)
 	const int32 BytesPerSplat = 12;
@@ -184,6 +287,8 @@ TArray<FVector> UGaussianSplatAsset::GetDecompressedPositions() const
 		const float* FloatPtr = reinterpret_cast<const float*>(DataPtr + i * BytesPerSplat);
 		Positions[i] = FVector(FloatPtr[0], FloatPtr[1], FloatPtr[2]);
 	}
+
+	PositionBulkData.Unlock();
 
 	return Positions;
 }
@@ -228,9 +333,11 @@ void UGaussianSplatAsset::CompressPositions(const TArray<FGaussianSplatData>& In
 {
 	// Simplified: Always use Float32 format (12 bytes per position)
 	const int32 BytesPerSplat = 12;
-	PositionData.SetNum(SplatCount * BytesPerSplat);
+	const int32 TotalBytes = SplatCount * BytesPerSplat;
 
-	uint8* DataPtr = PositionData.GetData();
+	// Lock bulk data for writing
+	PositionBulkData.Lock(LOCK_READ_WRITE);
+	uint8* DataPtr = static_cast<uint8*>(PositionBulkData.Realloc(TotalBytes));
 
 	for (int32 i = 0; i < SplatCount; i++)
 	{
@@ -240,6 +347,11 @@ void UGaussianSplatAsset::CompressPositions(const TArray<FGaussianSplatData>& In
 		FloatPtr[1] = Splat.Position.Y;
 		FloatPtr[2] = Splat.Position.Z;
 	}
+
+	PositionBulkData.Unlock();
+
+	// Set bulk data flags for optimal storage
+	PositionBulkData.SetBulkDataFlags(BULKDATA_Force_NOT_InlinePayload);
 }
 
 void UGaussianSplatAsset::CompressRotationScale(const TArray<FGaussianSplatData>& InSplats)
@@ -249,9 +361,11 @@ void UGaussianSplatAsset::CompressRotationScale(const TArray<FGaussianSplatData>
 	// For now, use full precision: 28 bytes per splat
 
 	const int32 BytesPerSplat = 28; // 16 (quat) + 12 (scale)
-	OtherData.SetNum(SplatCount * BytesPerSplat);
+	const int32 TotalBytes = SplatCount * BytesPerSplat;
 
-	uint8* DataPtr = OtherData.GetData();
+	// Lock bulk data for writing
+	OtherBulkData.Lock(LOCK_READ_WRITE);
+	uint8* DataPtr = static_cast<uint8*>(OtherBulkData.Realloc(TotalBytes));
 
 	for (int32 i = 0; i < SplatCount; i++)
 	{
@@ -270,6 +384,11 @@ void UGaussianSplatAsset::CompressRotationScale(const TArray<FGaussianSplatData>
 		FloatPtr[5] = Splat.Scale.Y;
 		FloatPtr[6] = Splat.Scale.Z;
 	}
+
+	OtherBulkData.Unlock();
+
+	// Set bulk data flags for optimal storage
+	OtherBulkData.SetBulkDataFlags(BULKDATA_Force_NOT_InlinePayload);
 }
 
 void UGaussianSplatAsset::CreateColorTextureData(const TArray<FGaussianSplatData>& InSplats)
@@ -283,9 +402,10 @@ void UGaussianSplatAsset::CreateColorTextureData(const TArray<FGaussianSplatData
 
 	// Allocate raw pixel data (FFloat16Color = 8 bytes per pixel: R16G16B16A16)
 	const int32 NumBytes = ColorTextureWidth * ColorTextureHeight * sizeof(FFloat16Color);
-	ColorTextureData.SetNum(NumBytes);
 
-	FFloat16Color* PixelData = reinterpret_cast<FFloat16Color*>(ColorTextureData.GetData());
+	// Lock bulk data for writing
+	ColorTextureBulkData.Lock(LOCK_READ_WRITE);
+	FFloat16Color* PixelData = reinterpret_cast<FFloat16Color*>(ColorTextureBulkData.Realloc(NumBytes));
 
 	// Initialize to black
 	FMemory::Memzero(PixelData, NumBytes);
@@ -314,18 +434,24 @@ void UGaussianSplatAsset::CreateColorTextureData(const TArray<FGaussianSplatData
 		}
 	}
 
+	ColorTextureBulkData.Unlock();
+
+	// Set bulk data flags for optimal storage
+	ColorTextureBulkData.SetBulkDataFlags(BULKDATA_Force_NOT_InlinePayload);
+
 	UE_LOG(LogTemp, Log, TEXT("CreateColorTextureData: Stored %d bytes of pixel data"), NumBytes);
 }
 
 void UGaussianSplatAsset::CreateColorTextureFromData()
 {
-	if (ColorTextureData.Num() == 0 || ColorTextureWidth <= 0 || ColorTextureHeight <= 0)
+	const int64 BulkDataSize = ColorTextureBulkData.GetBulkDataSize();
+	if (BulkDataSize == 0 || ColorTextureWidth <= 0 || ColorTextureHeight <= 0)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("CreateColorTextureFromData: No data to create texture from"));
 		return;
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("CreateColorTextureFromData: Creating %dx%d texture from stored data"),
+	UE_LOG(LogTemp, Log, TEXT("CreateColorTextureFromData: Creating %dx%d texture from stored bulk data"),
 		ColorTextureWidth, ColorTextureHeight);
 
 	// Create texture - use Transient flag since this is recreated at runtime
@@ -354,12 +480,16 @@ void UGaussianSplatAsset::CreateColorTextureFromData()
 	Mip->SizeX = ColorTextureWidth;
 	Mip->SizeY = ColorTextureHeight;
 
-	// Copy the stored pixel data into the mip's bulk data
-	const int32 NumBytes = ColorTextureData.Num();
+	// Lock bulk data for reading and copy to mip
+	const void* SrcData = ColorTextureBulkData.LockReadOnly();
+	const int32 NumBytes = static_cast<int32>(BulkDataSize);
+
 	Mip->BulkData.Lock(LOCK_READ_WRITE);
 	void* MipData = Mip->BulkData.Realloc(NumBytes);
-	FMemory::Memcpy(MipData, ColorTextureData.GetData(), NumBytes);
+	FMemory::Memcpy(MipData, SrcData, NumBytes);
 	Mip->BulkData.Unlock();
+
+	ColorTextureBulkData.Unlock();
 
 	// Create the GPU resource
 	ColorTexture->UpdateResource();
@@ -372,7 +502,8 @@ void UGaussianSplatAsset::CompressSH(const TArray<FGaussianSplatData>& InSplats)
 	if (SHBands == 0)
 	{
 		// No additional SH data needed (DC stored in color texture)
-		SHData.Empty();
+		// Clear any existing bulk data
+		SHBulkData.RemoveBulkData();
 		return;
 	}
 
@@ -381,9 +512,11 @@ void UGaussianSplatAsset::CompressSH(const TArray<FGaussianSplatData>& InSplats)
 	// Always store as Float16 for now (TODO: implement Norm11/Norm6 compression)
 	// Calculate actual bytes needed: NumCoeffs * 3 channels * 2 bytes per FFloat16
 	const int32 BytesPerSplat = NumCoeffs * 3 * sizeof(FFloat16);
-	SHData.SetNum(SplatCount * BytesPerSplat);
+	const int32 TotalBytes = SplatCount * BytesPerSplat;
 
-	FFloat16* HalfPtr = reinterpret_cast<FFloat16*>(SHData.GetData());
+	// Lock bulk data for writing
+	SHBulkData.Lock(LOCK_READ_WRITE);
+	FFloat16* HalfPtr = reinterpret_cast<FFloat16*>(SHBulkData.Realloc(TotalBytes));
 
 	for (int32 i = 0; i < SplatCount; i++)
 	{
@@ -398,6 +531,75 @@ void UGaussianSplatAsset::CompressSH(const TArray<FGaussianSplatData>& InSplats)
 		}
 	}
 
+	SHBulkData.Unlock();
+
+	// Set bulk data flags for optimal storage
+	SHBulkData.SetBulkDataFlags(BULKDATA_Force_NOT_InlinePayload);
+
 	// Update format to reflect actual storage
 	SHFormat = EGaussianSHFormat::Float16;
+}
+
+void UGaussianSplatAsset::GetPositionData(TArray<uint8>& OutData) const
+{
+	const int64 DataSize = PositionBulkData.GetBulkDataSize();
+	if (DataSize > 0)
+	{
+		OutData.SetNum(static_cast<int32>(DataSize));
+		const void* SrcData = PositionBulkData.LockReadOnly();
+		FMemory::Memcpy(OutData.GetData(), SrcData, DataSize);
+		PositionBulkData.Unlock();
+	}
+	else
+	{
+		OutData.Empty();
+	}
+}
+
+void UGaussianSplatAsset::GetOtherData(TArray<uint8>& OutData) const
+{
+	const int64 DataSize = OtherBulkData.GetBulkDataSize();
+	if (DataSize > 0)
+	{
+		OutData.SetNum(static_cast<int32>(DataSize));
+		const void* SrcData = OtherBulkData.LockReadOnly();
+		FMemory::Memcpy(OutData.GetData(), SrcData, DataSize);
+		OtherBulkData.Unlock();
+	}
+	else
+	{
+		OutData.Empty();
+	}
+}
+
+void UGaussianSplatAsset::GetSHData(TArray<uint8>& OutData) const
+{
+	const int64 DataSize = SHBulkData.GetBulkDataSize();
+	if (DataSize > 0)
+	{
+		OutData.SetNum(static_cast<int32>(DataSize));
+		const void* SrcData = SHBulkData.LockReadOnly();
+		FMemory::Memcpy(OutData.GetData(), SrcData, DataSize);
+		SHBulkData.Unlock();
+	}
+	else
+	{
+		OutData.Empty();
+	}
+}
+
+void UGaussianSplatAsset::GetColorTextureData(TArray<uint8>& OutData) const
+{
+	const int64 DataSize = ColorTextureBulkData.GetBulkDataSize();
+	if (DataSize > 0)
+	{
+		OutData.SetNum(static_cast<int32>(DataSize));
+		const void* SrcData = ColorTextureBulkData.LockReadOnly();
+		FMemory::Memcpy(OutData.GetData(), SrcData, DataSize);
+		ColorTextureBulkData.Unlock();
+	}
+	else
+	{
+		OutData.Empty();
+	}
 }

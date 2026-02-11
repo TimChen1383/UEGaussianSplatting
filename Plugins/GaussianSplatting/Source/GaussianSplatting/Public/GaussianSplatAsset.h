@@ -4,8 +4,15 @@
 
 #include "CoreMinimal.h"
 #include "UObject/ObjectMacros.h"
+#include "Serialization/BulkData.h"
 #include "GaussianDataTypes.h"
 #include "GaussianSplatAsset.generated.h"
+
+// Asset version for backward compatibility
+#define GAUSSIAN_SPLAT_ASSET_VERSION 2
+#define GAUSSIAN_SPLAT_ASSET_MAGIC 0x47535056  // "GSPV" - Gaussian Splat Version marker
+// Version 1: Original TArray<uint8> serialization (no magic/version header)
+// Version 2: FByteBulkData for large arrays (positions, other, SH, color texture)
 
 /**
  * Asset containing Gaussian Splatting data loaded from PLY files
@@ -41,7 +48,7 @@ public:
 
 	/** Check if asset has valid data */
 	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting")
-	bool IsValid() const { return SplatCount > 0 && PositionData.Num() > 0; }
+	bool IsValid() const { return SplatCount > 0 && PositionBulkData.GetBulkDataSize() > 0; }
 
 public:
 	/** Total number of splats */
@@ -68,29 +75,25 @@ public:
 	UPROPERTY(VisibleAnywhere, Category = "Format")
 	int32 SHBands = 3;
 
-	/** Compressed position data */
-	UPROPERTY()
-	TArray<uint8> PositionData;
+	/** Compressed position data (stored as bulk data for fast loading) */
+	FByteBulkData PositionBulkData;
 
-	/** Compressed rotation + scale data */
-	UPROPERTY()
-	TArray<uint8> OtherData;
+	/** Compressed rotation + scale data (stored as bulk data for fast loading) */
+	FByteBulkData OtherBulkData;
 
-	/** Compressed spherical harmonics data */
-	UPROPERTY()
-	TArray<uint8> SHData;
+	/** Compressed spherical harmonics data (stored as bulk data for fast loading) */
+	FByteBulkData SHBulkData;
 
-	/** Chunk quantization info (one per 256 splats) */
+	/** Chunk quantization info (one per 256 splats) - kept as TArray since it's small */
 	UPROPERTY()
 	TArray<FGaussianChunkInfo> ChunkData;
 
-	/** Color texture (Morton-swizzled, 2048 x N) - created at runtime from ColorTextureData */
+	/** Color texture (Morton-swizzled, 2048 x N) - created at runtime from ColorTextureBulkData */
 	UPROPERTY(Transient)
 	TObjectPtr<UTexture2D> ColorTexture;
 
-	/** Raw color texture pixel data (serialized, used to recreate ColorTexture at runtime) */
-	UPROPERTY()
-	TArray<uint8> ColorTextureData;
+	/** Raw color texture pixel data (stored as bulk data for fast loading) */
+	FByteBulkData ColorTextureBulkData;
 
 	/** Color texture width */
 	UPROPERTY()
@@ -131,6 +134,42 @@ public:
 
 	/** Get bytes per splat for SH data based on format */
 	static int32 GetSHBytesPerSplat(EGaussianSHFormat Format, int32 Bands);
+
+	/**
+	 * Copy position bulk data to a TArray (for GPU upload)
+	 * @param OutData Array to copy data into
+	 */
+	void GetPositionData(TArray<uint8>& OutData) const;
+
+	/**
+	 * Copy rotation/scale bulk data to a TArray (for GPU upload)
+	 * @param OutData Array to copy data into
+	 */
+	void GetOtherData(TArray<uint8>& OutData) const;
+
+	/**
+	 * Copy SH bulk data to a TArray (for GPU upload)
+	 * @param OutData Array to copy data into
+	 */
+	void GetSHData(TArray<uint8>& OutData) const;
+
+	/**
+	 * Copy color texture bulk data to a TArray
+	 * @param OutData Array to copy data into
+	 */
+	void GetColorTextureData(TArray<uint8>& OutData) const;
+
+	/** Get size of position bulk data in bytes */
+	int64 GetPositionDataSize() const { return PositionBulkData.GetBulkDataSize(); }
+
+	/** Get size of other bulk data in bytes */
+	int64 GetOtherDataSize() const { return OtherBulkData.GetBulkDataSize(); }
+
+	/** Get size of SH bulk data in bytes */
+	int64 GetSHDataSize() const { return SHBulkData.GetBulkDataSize(); }
+
+	/** Get size of color texture bulk data in bytes */
+	int64 GetColorTextureDataSize() const { return ColorTextureBulkData.GetBulkDataSize(); }
 
 private:
 	/** Compress and store position data */
