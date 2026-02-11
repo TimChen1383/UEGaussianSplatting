@@ -19,4 +19,13 @@ This project primarily aims to solve this issue.
 - [ ] Dynamic load and unload macro tiles
 - [ ] Dynamic switching micro LOD 
 
+## How To Use It
+- simply press the import button to import PLY file
+<img width="903" height="303" alt="ImportPLY" src="https://github.com/user-attachments/assets/8192e65d-7f3e-4bc6-ade0-ca29159c900f" />
+- Add Gaussian Splat Actor to the level
+<img width="929" height="248" alt="GaussianSplatActor" src="https://github.com/user-attachments/assets/96ecbb2d-18f0-42a5-a6d2-32db1480743c" />
+- Assign the imported PLY uasset to the Gaussian Splat Actor
+<img width="927" height="475" alt="GaussianSplatActorAssign" src="https://github.com/user-attachments/assets/00083594-29b4-4706-90ce-af19e6ff6ba7" />
+
+
 ## Temporary Result
