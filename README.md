@@ -21,7 +21,8 @@ This project primarily aims to solve this issue though dynamic streaming methods
 - [x] Hook render result into Unreal Engine's render pipeline: before post process
 - [x] Speed up serialize and deserialize process: Bulk Data
 - [ ] Dynamic load and unload macro tiles
-- [ ] Dynamic switching micro LOD 
+- [ ] Dynamic switching micro LOD
+- [ ] Anti Aliasing
 
 ## How To Use It
 - Simply press the import button to import PLY file
