@@ -1,0 +1,143 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+// Purpose: Transform LOD splat data -> 2D screen-space data
+// This is a simplified version of CalcViewData for LOD splats which have pre-computed colors
+
+#include "/Plugin/GaussianSplatting/Private/GaussianDataTypes.ush"
+
+// Input: LOD splat data buffer
+StructuredBuffer<FGaussianGPULODSplat> LODSplatBuffer;
+
+// Output: View data for rendering
+RWStructuredBuffer<FGaussianSplatViewData> ViewDataBuffer;
+
+// Transforms
+float4x4 LocalToWorld;
+float4x4 WorldToClip;
+float4x4 WorldToView;
+float2 ScreenSize;
+float2 FocalLength;
+
+// LOD rendering parameters
+uint LODSplatStartIndex;  // Start index in LODSplatBuffer
+uint LODSplatCount;       // Number of LOD splats to process
+uint OutputStartIndex;    // Start index in ViewDataBuffer (to append after regular splats)
+float SplatScale;
+float OpacityScale;
+
+[numthreads(256, 1, 1)]
+void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	uint threadIndex = DispatchThreadId.x;
+	if (threadIndex >= LODSplatCount)
+	{
+		return;
+	}
+
+	// Load LOD splat data
+	uint lodSplatIndex = LODSplatStartIndex + threadIndex;
+	FGaussianGPULODSplat lodSplat = LODSplatBuffer[lodSplatIndex];
+
+	float3 localPos = lodSplat.Position;
+	float4 rotation = lodSplat.Rotation;
+	float3 scale = lodSplat.Scale * SplatScale;
+
+	// Unpack color and opacity
+	float4 colorOpacity = UnpackLODSplatColor(lodSplat.ColorOpacityPacked);
+	float opacity = colorOpacity.a * OpacityScale;
+
+	// Transform to world space
+	float4 worldPos = mul(float4(localPos, 1.0), LocalToWorld);
+
+	// Transform to clip space
+	float4 clipPos = mul(worldPos, WorldToClip);
+
+	// Cull if behind camera
+	if (clipPos.w <= 0.0)
+	{
+		FGaussianSplatViewData viewData;
+		viewData.ClipPosition = float4(0, 0, 0, -1); // Mark invalid
+		viewData.PackedColorRG = 0;
+		viewData.PackedColorBA = 0;
+		viewData.Axis1 = float2(0, 0);
+		viewData.Axis2 = float2(0, 0);
+		ViewDataBuffer[OutputStartIndex + threadIndex] = viewData;
+		return;
+	}
+
+	// Transform to view/camera space for covariance projection
+	float4 viewPos = mul(worldPos, WorldToView);
+
+	// Clamp view position to prevent extreme projections
+	float tanFovX = (ScreenSize.x * 0.5) / FocalLength.x;
+	float tanFovY = (ScreenSize.y * 0.5) / FocalLength.y;
+	float limX = 1.3 * tanFovX;
+	float limY = 1.3 * tanFovY;
+	viewPos.x = clamp(viewPos.x / viewPos.z, -limX, limX) * viewPos.z;
+	viewPos.y = clamp(viewPos.y / viewPos.z, -limY, limY) * viewPos.z;
+
+	// Calculate 3D covariance from rotation and scale
+	float3x3 cov3D_local = CalcCovariance3D(rotation, scale);
+
+	// Transform covariance from local space to world space
+	float3x3 localToWorldRot = (float3x3)LocalToWorld;
+	float3x3 cov3D_world = mul(transpose(localToWorldRot), mul(cov3D_local, localToWorldRot));
+
+	// Get view matrix (upper 3x3)
+	float3x3 viewMat = (float3x3)WorldToView;
+
+	// Project to 2D screen covariance
+	float2x2 cov2D = CalcCovariance2D(cov3D_world, viewMat, viewPos.xyz, FocalLength);
+
+	// Decompose into principal axes
+	float2 axis1, axis2;
+	DecomposeCovariance2D(cov2D, axis1, axis2);
+
+	// Convert axes to NDC space
+	axis1 = axis1 / ScreenSize * 4.0;
+	axis2 = axis2 / ScreenSize * 4.0;
+
+	// Safety check: clamp axes to reasonable NDC range
+	float maxAxisSize = 2.0;
+	if (any(isnan(axis1)) || any(isinf(axis1)) || length(axis1) > maxAxisSize)
+	{
+		axis1 = float2(0.01, 0.0);
+	}
+	if (any(isnan(axis2)) || any(isinf(axis2)) || length(axis2) > maxAxisSize)
+	{
+		axis2 = float2(0.0, 0.01);
+	}
+
+	// Frustum culling
+	{
+		float2 ndcCenter = clipPos.xy / clipPos.w;
+		float2 ndcExtent = abs(axis1) + abs(axis2);
+
+		if (ndcCenter.x - ndcExtent.x > 1.0 || ndcCenter.x + ndcExtent.x < -1.0 ||
+			ndcCenter.y - ndcExtent.y > 1.0 || ndcCenter.y + ndcExtent.y < -1.0)
+		{
+			FGaussianSplatViewData viewData;
+			viewData.ClipPosition = float4(0, 0, 0, -1); // Mark invalid
+			viewData.PackedColorRG = 0;
+			viewData.PackedColorBA = 0;
+			viewData.Axis1 = float2(0, 0);
+			viewData.Axis2 = float2(0, 0);
+			ViewDataBuffer[OutputStartIndex + threadIndex] = viewData;
+			return;
+		}
+	}
+
+	// LOD splats use pre-computed color (no SH evaluation needed)
+	// Color is already in linear space (was converted during LOD generation)
+	float3 finalColor = colorOpacity.rgb;
+
+	// Pack and store view data
+	FGaussianSplatViewData viewData;
+	viewData.ClipPosition = clipPos;
+	viewData.PackedColorRG = PackHalf2x16(finalColor.rg);
+	viewData.PackedColorBA = PackHalf2x16(float2(finalColor.b, opacity));
+	viewData.Axis1 = axis1;
+	viewData.Axis2 = axis2;
+
+	ViewDataBuffer[OutputStartIndex + threadIndex] = viewData;
+}

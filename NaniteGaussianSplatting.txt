@@ -1,0 +1,601 @@
+================================================================================
+           NANITE-STYLE GAUSSIAN SPLATTING OPTIMIZATION PLAN
+================================================================================
+
+Project: UEGaussianSplatting Performance Optimization
+Goal: Apply Nanite-inspired techniques to improve rendering performance
+      for high-density Gaussian Splatting scenes
+
+================================================================================
+                            OVERVIEW
+================================================================================
+
+Current Pain Points:
+  - Loading multiple high-density GS files causes performance issues
+  - All splats processed every frame (no hierarchical culling)
+  - Full radix sort required when camera moves
+  - No LOD system (same quality regardless of distance)
+  - Entire asset must fit in GPU memory
+
+Proposed Solution Phases:
+  Phase 1: Hierarchical Data Structure (Foundation)
+  Phase 2: Cluster-Level Culling (Quick Win)
+  Phase 3: LOD System (Major Visual Optimization)
+  Phase 4: GPU-Driven Rendering (Advanced Optimization)
+  Phase 5: Streaming System (Large Scene Support)
+
+================================================================================
+                    PHASE 1: HIERARCHICAL DATA STRUCTURE
+================================================================================
+
+Duration: ~1-2 weeks
+Risk Level: LOW (preprocessing only, no runtime changes yet)
+
+GOAL: Build hierarchical cluster structure during asset import without
+      changing any runtime rendering behavior.
+
+------------------------------------------------------------------------------
+Milestone 1.1: Define Cluster Data Structures
+------------------------------------------------------------------------------
+
+Tasks:
+  [ ] Create new header: GaussianClusterTypes.h
+      - FGaussianCluster struct:
+        * uint32 ClusterID
+        * uint32 ParentClusterID (0xFFFFFFFF for root)
+        * TArray<uint32> ChildClusterIDs
+        * uint32 LODLevel
+        * FBoxSphereBounds Bounds (AABB + bounding sphere)
+        * uint32 SplatStartIndex
+        * uint32 SplatCount
+        * float MaxScreenSpaceError (for LOD selection)
+
+      - FGaussianClusterHierarchy struct:
+        * TArray<FGaussianCluster> Clusters
+        * uint32 NumLODLevels
+        * uint32 SplatsPerCluster (default: 128)
+
+  [ ] Add cluster hierarchy to FGaussianSplatAsset
+      - FByteBulkData ClusterHierarchyBulkData
+      - Increment asset version number
+
+CHECKPOINT 1.1:
+  - Build project successfully
+  - No runtime behavior changes
+  - Verify asset can still load/save (backward compatibility)
+
+------------------------------------------------------------------------------
+Milestone 1.2: Implement Cluster Building Algorithm
+------------------------------------------------------------------------------
+
+Tasks:
+  [ ] Create GaussianClusterBuilder.h/.cpp
+      - BuildClusterHierarchy(TArray<FGaussianSplatData>& Splats)
+
+  [ ] Implement bottom-up clustering:
+      Step 1: Sort splats by Morton code (spatial locality)
+      Step 2: Group into leaf clusters (128 splats each)
+      Step 3: Compute bounding boxes for leaf clusters
+      Step 4: Recursively merge clusters (4-8 children per parent)
+      Step 5: Stop when single root cluster remains
+
+  [ ] Calculate cluster metadata:
+      - Bounding sphere from child bounds
+      - Screen-space error estimate based on splat density
+
+  [ ] Add unit tests for cluster building
+
+CHECKPOINT 1.2:
+  - Build project successfully
+  - Run cluster builder on test PLY file
+  - Verify hierarchy structure is correct (log output)
+  - Verify splat ordering is preserved
+
+------------------------------------------------------------------------------
+Milestone 1.3: Integrate with Asset Import Pipeline
+------------------------------------------------------------------------------
+
+Tasks:
+  [ ] Modify GaussianSplatFactory.cpp:
+      - Call BuildClusterHierarchy after loading splats
+      - Reorder splats to match cluster order
+      - Update all dependent indices
+
+  [ ] Modify GaussianSplatAsset serialization:
+      - Save cluster hierarchy to bulk data
+      - Load cluster hierarchy on asset load
+      - Handle legacy assets (no clusters = flat hierarchy)
+
+  [ ] Add editor option: "Rebuild Cluster Hierarchy"
+
+CHECKPOINT 1.3:
+  - Import new PLY file -> clusters generated
+  - Re-import existing asset -> clusters generated
+  - Load asset in level -> renders correctly (no visual change)
+  - Check memory usage is reasonable
+
+------------------------------------------------------------------------------
+PHASE 1 COMPLETE VERIFICATION:
+------------------------------------------------------------------------------
+  [ ] All existing functionality works unchanged
+  [ ] New assets contain cluster hierarchy data
+  [ ] Legacy assets load without errors
+  [ ] No performance regression (measure baseline FPS)
+
+
+================================================================================
+                    PHASE 2: CLUSTER-LEVEL CULLING
+================================================================================
+
+Duration: ~1 week
+Risk Level: MEDIUM (modifies rendering pipeline)
+
+GOAL: Perform frustum culling at cluster level before processing individual
+      splats. This alone should provide significant speedup for partially
+      visible objects.
+
+------------------------------------------------------------------------------
+Milestone 2.1: GPU Cluster Data Structures
+------------------------------------------------------------------------------
+
+Tasks:
+  [ ] Add to GaussianSplatSceneProxy:
+      - FStructuredBufferRHIRef ClusterBuffer
+      - FStructuredBufferRHIRef VisibleClusterBuffer
+      - FBufferRHIRef ClusterIndirectArgsBuffer
+
+  [ ] Create GPU cluster struct (ClusterData.ush):
+      struct FGPUCluster
+      {
+          float3 BoundsMin;
+          uint   SplatStartIndex;
+          float3 BoundsMax;
+          uint   SplatCount;
+          float4 BoundingSphere; // xyz=center, w=radius
+          uint   ParentIndex;
+          uint   LODLevel;
+          uint2  Padding;
+      }; // 64 bytes, cache-line aligned
+
+  [ ] Upload cluster data on proxy creation
+
+CHECKPOINT 2.1:
+  - Build successfully
+  - Cluster buffer created and uploaded
+  - Rendering still works (no usage of clusters yet)
+
+------------------------------------------------------------------------------
+Milestone 2.2: Cluster Frustum Culling Compute Shader
+------------------------------------------------------------------------------
+
+Tasks:
+  [ ] Create ClusterCulling.usf:
+      - Input: ClusterBuffer, ViewProjectionMatrix, NumClusters
+      - Output: VisibleClusterBuffer, VisibleClusterCount
+
+  [ ] Implement frustum culling:
+      - Test bounding sphere against 6 frustum planes
+      - If visible, append to VisibleClusterBuffer
+      - Use atomic counter for visible count
+
+  [ ] Create FClusterCullingCS shader class
+
+CHECKPOINT 2.2:
+  - Shader compiles without errors
+  - Can dispatch shader (even if result not used yet)
+
+------------------------------------------------------------------------------
+Milestone 2.3: Integrate Cluster Culling into Render Pipeline
+------------------------------------------------------------------------------
+
+Tasks:
+  [ ] Modify GaussianSplatRenderer.cpp:
+      - Add cluster culling pass BEFORE CalcViewData
+      - Pass visible cluster list to CalcViewData
+
+  [ ] Modify CalcViewData.usf:
+      - Option A (simpler): Skip splats not in visible clusters
+      - Option B (better): Only process splats from visible clusters
+
+  [ ] Add debug visualization:
+      - Console command: "gs.ShowClusterBounds 1"
+      - Draw cluster bounding boxes (green=visible, red=culled)
+
+CHECKPOINT 2.3:
+  - Partial object visibility works correctly
+  - Performance improvement when object partially off-screen
+  - Debug visualization shows correct culling
+
+------------------------------------------------------------------------------
+Milestone 2.4: Optimization & Profiling
+------------------------------------------------------------------------------
+
+Tasks:
+  [ ] Profile cluster culling overhead vs. savings
+  [ ] Tune cluster size (128 vs 256 vs 512 splats)
+  [ ] Add stats: "stat GaussianSplatting"
+      - Clusters Total / Visible / Culled
+      - Splats Total / Visible / Culled
+      - Culling time (ms)
+
+CHECKPOINT 2.4:
+  - Measurable FPS improvement (document numbers)
+  - Stats command working
+  - No visual artifacts
+
+------------------------------------------------------------------------------
+PHASE 2 COMPLETE VERIFICATION:
+------------------------------------------------------------------------------
+  [ ] Frustum culling working at cluster level
+  [ ] Performance improved for partially visible objects
+  [ ] Debug visualization available
+  [ ] Stats tracking implemented
+  [ ] No visual regression
+
+
+================================================================================
+                    PHASE 3: LOD SYSTEM
+================================================================================
+
+Duration: ~2-3 weeks
+Risk Level: MEDIUM-HIGH (significant changes to data and rendering)
+
+GOAL: Implement screen-space error based LOD selection. Distant/small
+      clusters use simplified representations with fewer, larger splats.
+
+------------------------------------------------------------------------------
+Milestone 3.1: LOD Data Generation
+------------------------------------------------------------------------------
+
+Tasks:
+  [ ] Extend GaussianClusterBuilder:
+      - Generate simplified splats for each parent cluster
+      - Merge algorithm: weighted average position, combined covariance
+
+  [ ] Implement Gaussian merging:
+      FGaussianSplatData MergeGaussians(TArray<FGaussianSplatData>& Sources)
+      - Position: opacity-weighted centroid
+      - Rotation/Scale: derive from combined covariance matrix
+      - Color/SH: opacity-weighted average
+      - Opacity: 1 - product(1 - opacity_i) [probabilistic combination]
+
+  [ ] Store LOD splat data:
+      - LOD 0: Original splats
+      - LOD 1: ~1/4 splat count (merge groups of 4)
+      - LOD 2: ~1/16 splat count
+      - etc.
+
+CHECKPOINT 3.1:
+  - LOD splat data generated during import
+  - Verify merged splats look reasonable (log/visualize)
+  - Asset size increase is acceptable
+
+------------------------------------------------------------------------------
+Milestone 3.2: Screen-Space Error Calculation
+------------------------------------------------------------------------------
+
+Tasks:
+  [ ] Add to each cluster:
+      - float LODError: max geometric error introduced by this LOD
+      - Calculated as max distance from any original splat to merged splat
+
+  [ ] Implement runtime error projection:
+      float ProjectedError = (LODError / DistanceToCamera) * ScreenHeight;
+
+  [ ] LOD selection logic:
+      if (ProjectedError < PixelThreshold)
+          UseThisLOD();
+      else
+          UseChildrenLODs();
+
+CHECKPOINT 3.2:
+  - Error values computed for all clusters
+  - LOD selection logic implemented (can test with debug output)
+
+------------------------------------------------------------------------------
+Milestone 3.3: GPU LOD Selection
+------------------------------------------------------------------------------
+
+Tasks:
+  [ ] Create LODSelection.usf compute shader:
+      - Input: Clusters, CameraPosition, ErrorThreshold
+      - Output: SelectedClusters (leaf nodes to render)
+
+  [ ] Implement hierarchical traversal:
+      - Start from root
+      - If error acceptable, select this cluster
+      - Else, recurse to children
+      - Use wave operations for efficiency
+
+  [ ] Handle LOD transitions:
+      - Option A: Hard cut (simplest)
+      - Option B: Blend between LODs (smoother, more complex)
+
+CHECKPOINT 3.3:
+  - LOD selection running on GPU
+  - Distant objects use fewer splats
+  - Verify visual quality at various distances
+
+------------------------------------------------------------------------------
+Milestone 3.4: LOD Splat Rendering
+------------------------------------------------------------------------------
+
+Tasks:
+  [ ] Modify rendering to support multiple LOD data sources:
+      - Each LOD level has its own position/color/SH buffers
+      - Or: unified buffer with LOD regions
+
+  [ ] Update CalcViewData to handle LOD splats:
+      - Use correct buffer offsets based on selected LOD
+
+  [ ] Sorting consideration:
+      - Sort within LOD groups
+      - May need separate sort for each LOD level
+
+CHECKPOINT 3.4:
+  - Multi-LOD rendering working
+  - Smooth quality gradation with distance
+  - Performance scales with visible complexity
+
+------------------------------------------------------------------------------
+Milestone 3.5: LOD Quality Tuning
+------------------------------------------------------------------------------
+
+Tasks:
+  [ ] Add user-configurable settings:
+      - Error threshold (quality vs performance slider)
+      - Force LOD level (for debugging)
+      - LOD bias (shift all LODs coarser/finer)
+
+  [ ] Add LOD debug visualization:
+      - Color code by LOD level
+      - Show LOD boundaries
+
+  [ ] Profile and optimize:
+      - Memory usage per LOD level
+      - Selection overhead
+      - Transition smoothness
+
+CHECKPOINT 3.5:
+  - User can adjust LOD settings
+  - Debug visualization working
+  - Good balance found between quality and performance
+
+------------------------------------------------------------------------------
+PHASE 3 COMPLETE VERIFICATION:
+------------------------------------------------------------------------------
+  [ ] LOD system fully functional
+  [ ] Significant performance improvement for complex scenes
+  [ ] Acceptable visual quality at all distances
+  [ ] User controls available
+  [ ] Memory overhead documented
+
+
+================================================================================
+                    PHASE 4: GPU-DRIVEN RENDERING
+================================================================================
+
+Duration: ~1-2 weeks
+Risk Level: MEDIUM (advanced GPU programming)
+
+GOAL: Move draw call generation to GPU, eliminating CPU bottleneck for
+      scenes with many Gaussian Splatting actors.
+
+------------------------------------------------------------------------------
+Milestone 4.1: Indirect Draw Setup
+------------------------------------------------------------------------------
+
+Tasks:
+  [ ] Create indirect argument buffers:
+      - FBufferRHIRef IndirectDrawArgsBuffer
+      - Structure: { VertexCount, InstanceCount, StartVertex, StartInstance }
+
+  [ ] Modify cluster culling to write instance counts:
+      - Visible cluster count -> InstanceCount for indirect draw
+      - Or: accumulate visible splat counts
+
+CHECKPOINT 4.1:
+  - Indirect args buffer created
+  - Values written by GPU
+
+------------------------------------------------------------------------------
+Milestone 4.2: ExecuteIndirect Integration
+------------------------------------------------------------------------------
+
+Tasks:
+  [ ] Replace DrawIndexedPrimitive with DrawIndexedPrimitiveIndirect
+
+  [ ] Handle multi-draw for LOD groups:
+      - Option A: Single draw, GPU selects splat data
+      - Option B: Multi-draw indirect, one per LOD
+
+  [ ] Ensure synchronization:
+      - Compute must complete before draw reads args
+
+CHECKPOINT 4.2:
+  - Rendering uses indirect draw
+  - Visual result identical to before
+  - CPU no longer waits for visibility results
+
+------------------------------------------------------------------------------
+Milestone 4.3: Multi-Actor Batching
+------------------------------------------------------------------------------
+
+Tasks:
+  [ ] Batch multiple GS actors into single dispatch:
+      - Shared culling pass for all actors
+      - Unified sort (or per-actor sort)
+
+  [ ] Instance data management:
+      - Per-actor transforms in structured buffer
+      - Cluster data references actor index
+
+CHECKPOINT 4.3:
+  - Multiple actors render efficiently
+  - Draw call count reduced
+  - Performance scales better with actor count
+
+------------------------------------------------------------------------------
+PHASE 4 COMPLETE VERIFICATION:
+------------------------------------------------------------------------------
+  [ ] GPU-driven rendering working
+  [ ] CPU overhead minimized
+  [ ] Multi-actor scenes perform well
+  [ ] No visual regression
+
+
+================================================================================
+                    PHASE 5: STREAMING SYSTEM
+================================================================================
+
+Duration: ~2-3 weeks
+Risk Level: HIGH (complex async loading, memory management)
+
+GOAL: Load/unload cluster data on demand, enabling scenes larger than
+      GPU memory.
+
+------------------------------------------------------------------------------
+Milestone 5.1: Streaming Architecture Design
+------------------------------------------------------------------------------
+
+Tasks:
+  [ ] Design streaming granularity:
+      - Per-cluster streaming? Per-LOD-level? Per-region?
+
+  [ ] Define residency states:
+      - NotLoaded: Data on disk only
+      - Loading: Async load in progress
+      - Resident: In GPU memory, ready to render
+      - PendingUnload: Scheduled for removal
+
+  [ ] Memory budget system:
+      - Total GS memory budget (user configurable)
+      - Priority queue for loading/unloading
+
+CHECKPOINT 5.1:
+  - Design document complete
+  - Data structures defined
+
+------------------------------------------------------------------------------
+Milestone 5.2: Async Loading Infrastructure
+------------------------------------------------------------------------------
+
+Tasks:
+  [ ] Implement async bulk data loading:
+      - Use UE's async loading system
+      - Callback on load complete
+
+  [ ] GPU upload queue:
+      - Stage data in upload buffer
+      - Copy to final location
+      - Track pending uploads
+
+  [ ] Handle load failures gracefully
+
+CHECKPOINT 5.2:
+  - Async load working for test data
+  - GPU upload pipeline functional
+
+------------------------------------------------------------------------------
+Milestone 5.3: Visibility-Based Streaming
+------------------------------------------------------------------------------
+
+Tasks:
+  [ ] Track cluster visibility over time:
+      - Recently visible = high priority
+      - Not visible for N frames = candidate for unload
+
+  [ ] Predict future visibility:
+      - Camera velocity extrapolation
+      - Pre-load clusters in movement direction
+
+  [ ] Implement loading/unloading logic:
+      - Load: visibility + budget available
+      - Unload: not visible + over budget
+
+CHECKPOINT 5.3:
+  - Streaming responds to camera movement
+  - Memory stays within budget
+  - No visible popping (or minimal)
+
+------------------------------------------------------------------------------
+Milestone 5.4: Fallback Rendering
+------------------------------------------------------------------------------
+
+Tasks:
+  [ ] When cluster not loaded, render parent LOD:
+      - Parent cluster should always be resident
+      - Graceful degradation
+
+  [ ] Loading indicator (optional):
+      - Subtle visual feedback while loading
+      - Or: just use coarser LOD silently
+
+CHECKPOINT 5.4:
+  - Scene always renders something
+  - Quality improves as data streams in
+  - No crashes from missing data
+
+------------------------------------------------------------------------------
+PHASE 5 COMPLETE VERIFICATION:
+------------------------------------------------------------------------------
+  [ ] Streaming system functional
+  [ ] Memory budget respected
+  [ ] Large scenes loadable
+  [ ] Smooth quality transitions
+  [ ] No crashes or visual glitches
+
+
+================================================================================
+                         TESTING STRATEGY
+================================================================================
+
+Test Scenes:
+  1. Single small GS (< 100K splats) - baseline functionality
+  2. Single large GS (> 1M splats) - LOD effectiveness
+  3. Multiple small GS (10-50 actors) - batching effectiveness
+  4. Multiple large GS (5-10 actors) - full system stress test
+  5. Huge scene (> 10M total splats) - streaming test
+
+Performance Metrics to Track:
+  - FPS (average, 1% low, 0.1% low)
+  - GPU time breakdown (culling, LOD, sort, render)
+  - CPU time (should be minimal after Phase 4)
+  - Memory usage (GPU, system)
+  - Splat throughput (splats rendered per second)
+
+Quality Metrics:
+  - Visual comparison at various distances
+  - LOD transition smoothness
+  - Any artifacts or popping
+
+Automated Tests:
+  - Unit tests for cluster building
+  - Unit tests for Gaussian merging math
+  - Render comparison tests (screenshot diff)
+
+
+================================================================================
+                         RISK MITIGATION
+================================================================================
+
+Risk: Breaking existing functionality
+  - Mitigation: Feature flags for each phase
+  - gs.UseClusterCulling 0/1
+  - gs.UseLODSystem 0/1
+  - gs.UseGPUDriven 0/1
+  - gs.UseStreaming 0/1
+
+Risk: Performance regression in edge cases
+  - Mitigation: Extensive profiling, A/B comparison
+  - Keep "legacy" path available
+
+Risk: Visual quality degradation
+  - Mitigation: Conservative LOD thresholds initially
+  - User-adjustable quality settings
+
+Risk: Memory issues
+  - Mitigation: Careful budget management
+  - Fallback to simpler rendering if needed
+
+================================================================================

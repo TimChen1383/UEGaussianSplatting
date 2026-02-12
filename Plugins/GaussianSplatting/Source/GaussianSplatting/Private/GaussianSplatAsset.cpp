@@ -63,6 +63,19 @@ void UGaussianSplatAsset::Serialize(FArchive& Ar)
 		OtherBulkData.Serialize(Ar, this);
 		SHBulkData.Serialize(Ar, this);
 		ColorTextureBulkData.Serialize(Ar, this);
+
+		// Version 3+: Cluster hierarchy for Nanite-style optimization
+		if (Version >= 3)
+		{
+			Ar << bHasClusterHierarchy;
+			Ar << ClusterHierarchy;
+		}
+		else if (Ar.IsLoading())
+		{
+			// Legacy V2 assets don't have cluster hierarchy
+			bHasClusterHierarchy = false;
+			ClusterHierarchy.Reset();
+		}
 	}
 	else
 	{
@@ -169,6 +182,17 @@ int64 UGaussianSplatAsset::GetMemoryUsage() const
 	if (ColorTexture)
 	{
 		TotalBytes += ColorTexture->CalcTextureMemorySizeEnum(TMC_ResidentMips);
+	}
+
+	// Cluster hierarchy memory
+	if (bHasClusterHierarchy)
+	{
+		TotalBytes += ClusterHierarchy.Clusters.Num() * sizeof(FGaussianCluster);
+		// Account for dynamic arrays within clusters (ChildClusterIDs)
+		for (const FGaussianCluster& Cluster : ClusterHierarchy.Clusters)
+		{
+			TotalBytes += Cluster.ChildClusterIDs.Num() * sizeof(uint32);
+		}
 	}
 
 	return TotalBytes;

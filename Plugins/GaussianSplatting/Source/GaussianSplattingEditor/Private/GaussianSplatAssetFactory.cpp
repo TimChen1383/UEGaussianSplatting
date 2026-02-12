@@ -3,6 +3,7 @@
 #include "GaussianSplatAssetFactory.h"
 #include "GaussianSplatAsset.h"
 #include "PLYFileReader.h"
+#include "GaussianClusterBuilder.h"
 #include "EditorFramework/AssetImportData.h"
 #include "Misc/FeedbackContext.h"
 #include "Misc/ScopedSlowTask.h"
@@ -124,7 +125,7 @@ UGaussianSplatAsset* UGaussianSplatAssetFactory::ImportPLYFile(
 	SlowTask.MakeDialog(true);
 
 	// Read PLY file
-	SlowTask.EnterProgressFrame(30.0f, FText::FromString(TEXT("Reading PLY file...")));
+	SlowTask.EnterProgressFrame(20.0f, FText::FromString(TEXT("Reading PLY file...")));
 
 	TArray<FGaussianSplatData> SplatData;
 	FString ErrorMessage;
@@ -136,6 +137,28 @@ UGaussianSplatAsset* UGaussianSplatAssetFactory::ImportPLYFile(
 	}
 
 	UE_LOG(LogTemp, Log, TEXT("Read %d splats from PLY file"), SplatData.Num());
+
+	// Build cluster hierarchy (this reorders splats for spatial locality)
+	SlowTask.EnterProgressFrame(20.0f, FText::FromString(TEXT("Building cluster hierarchy...")));
+
+	FGaussianClusterHierarchy ClusterHierarchy;
+	FGaussianClusterBuilder::FBuildSettings BuildSettings;
+	BuildSettings.SplatsPerCluster = 128;
+	BuildSettings.MaxChildrenPerCluster = 8;
+	BuildSettings.bReorderSplats = true; // Reorder for better cache locality
+
+	bool bClusteringSucceeded = FGaussianClusterBuilder::BuildClusterHierarchy(
+		SplatData, ClusterHierarchy, BuildSettings);
+
+	if (bClusteringSucceeded)
+	{
+		UE_LOG(LogTemp, Log, TEXT("Built cluster hierarchy: %d clusters, %d LOD levels"),
+			ClusterHierarchy.Clusters.Num(), ClusterHierarchy.NumLODLevels);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Failed to build cluster hierarchy, continuing without clustering"));
+	}
 
 	// Create or reuse asset
 	SlowTask.EnterProgressFrame(10.0f, FText::FromString(TEXT("Creating asset...")));
@@ -155,16 +178,29 @@ UGaussianSplatAsset* UGaussianSplatAssetFactory::ImportPLYFile(
 	// Store source file path
 	Asset->SourceFilePath = FilePath;
 
-	// Initialize asset from splat data
-	SlowTask.EnterProgressFrame(60.0f, FText::FromString(TEXT("Compressing splat data...")));
+	// Initialize asset from splat data (uses reordered splats if clustering succeeded)
+	SlowTask.EnterProgressFrame(45.0f, FText::FromString(TEXT("Compressing splat data...")));
 
 	Asset->InitializeFromSplatData(SplatData, QualityLevel);
+
+	// Store cluster hierarchy if building succeeded
+	if (bClusteringSucceeded)
+	{
+		SlowTask.EnterProgressFrame(5.0f, FText::FromString(TEXT("Storing cluster hierarchy...")));
+		Asset->ClusterHierarchy = MoveTemp(ClusterHierarchy);
+		Asset->bHasClusterHierarchy = true;
+	}
+	else
+	{
+		Asset->bHasClusterHierarchy = false;
+		Asset->ClusterHierarchy.Reset();
+	}
 
 	// Mark package dirty
 	Asset->MarkPackageDirty();
 
-	UE_LOG(LogTemp, Log, TEXT("Successfully imported Gaussian Splat asset: %d splats, %lld bytes"),
-		Asset->GetSplatCount(), Asset->GetMemoryUsage());
+	UE_LOG(LogTemp, Log, TEXT("Successfully imported Gaussian Splat asset: %d splats, %d clusters, %lld bytes"),
+		Asset->GetSplatCount(), Asset->GetClusterCount(), Asset->GetMemoryUsage());
 
 	return Asset;
 }

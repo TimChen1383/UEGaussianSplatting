@@ -13,6 +13,11 @@ Texture2D ColorTexture;
 SamplerState ColorSampler;
 RWStructuredBuffer<FGaussianSplatViewData> ViewDataBuffer;
 
+// Cluster visibility integration
+StructuredBuffer<uint> SplatClusterIndexBuffer;
+StructuredBuffer<uint> ClusterVisibilityBitmap;
+uint UseClusterCulling;  // 1 = check visibility, 0 = process all splats
+
 float4x4 LocalToWorld;
 float4x4 WorldToClip;
 float4x4 WorldToView;
@@ -27,6 +32,14 @@ uint2 ColorTextureSize;
 uint PositionFormat; // 0=Float32 (only supported format now)
 uint UseDefaultColor; // 1 = use default color (no texture available), 0 = use texture
 
+// Check if a cluster is visible using the visibility bitmap
+bool IsClusterVisible(uint clusterIndex)
+{
+	uint bitmapIndex = clusterIndex / 32;
+	uint bitMask = 1u << (clusterIndex % 32);
+	return (ClusterVisibilityBitmap[bitmapIndex] & bitMask) != 0;
+}
+
 [numthreads(256, 1, 1)]
 void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 {
@@ -34,6 +47,26 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	if (splatIndex >= SplatCount)
 	{
 		return;
+	}
+
+	// Check cluster visibility if culling is enabled
+	if (UseClusterCulling)
+	{
+		uint clusterIndex = SplatClusterIndexBuffer[splatIndex];
+		if (!IsClusterVisible(clusterIndex))
+		{
+			// Cluster is culled - mark splat as invalid
+			// Use ClipPosition.w = -1 as invalid marker
+			// Depth will be set to MAX in CalcDistances to sort to end
+			FGaussianSplatViewData viewData;
+			viewData.ClipPosition = float4(0, 0, 0, -1);
+			viewData.PackedColorRG = 0;
+			viewData.PackedColorBA = 0;
+			viewData.Axis1 = float2(0, 0);
+			viewData.Axis2 = float2(0, 0);
+			ViewDataBuffer[splatIndex] = viewData;
+			return;
+		}
 	}
 
 	// Load splat data - Always Float32 format (simplified, most reliable)

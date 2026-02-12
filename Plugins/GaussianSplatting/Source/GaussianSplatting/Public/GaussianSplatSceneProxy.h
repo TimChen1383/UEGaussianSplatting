@@ -5,12 +5,17 @@
 #include "CoreMinimal.h"
 #include "PrimitiveSceneProxy.h"
 #include "GaussianDataTypes.h"
+#include "GaussianClusterTypes.h"
 #include "RenderResource.h"
 #include "RHI.h"
 #include "RHIResources.h"
 
 class UGaussianSplatComponent;
 class UGaussianSplatAsset;
+
+// Console variable declarations (defined in GaussianSplatting.cpp)
+extern TAutoConsoleVariable<int32> CVarShowClusterBounds;
+extern TAutoConsoleVariable<int32> CVarShowClusterStats;
 
 /**
  * GPU resources for Gaussian Splatting rendering
@@ -103,6 +108,79 @@ public:
 	/** Position format used by this asset (Float32, Norm16, etc.) */
 	EGaussianPositionFormat PositionFormat = EGaussianPositionFormat::Float32;
 
+	//----------------------------------------------------------------------
+	// Cluster culling resources (Nanite-style optimization)
+	//----------------------------------------------------------------------
+
+	/** Cluster data buffer (static, loaded from asset) */
+	FBufferRHIRef ClusterBuffer;
+	FShaderResourceViewRHIRef ClusterBufferSRV;
+
+	/** Visible cluster indices buffer (written by culling shader) */
+	FBufferRHIRef VisibleClusterBuffer;
+	FUnorderedAccessViewRHIRef VisibleClusterBufferUAV;
+	FShaderResourceViewRHIRef VisibleClusterBufferSRV;
+
+	/** Visible cluster count buffer (atomic counter) */
+	FBufferRHIRef VisibleClusterCountBuffer;
+	FUnorderedAccessViewRHIRef VisibleClusterCountBufferUAV;
+	FShaderResourceViewRHIRef VisibleClusterCountBufferSRV;
+
+	/** Number of clusters */
+	int32 ClusterCount = 0;
+
+	/** Number of leaf clusters (for rendering) */
+	int32 LeafClusterCount = 0;
+
+	/** Whether cluster culling is available */
+	bool bHasClusterData = false;
+
+	//----------------------------------------------------------------------
+	// LOD splat resources (for parent cluster rendering)
+	//----------------------------------------------------------------------
+
+	/** LOD splat data buffer (static, loaded from asset) */
+	FBufferRHIRef LODSplatBuffer;
+	FShaderResourceViewRHIRef LODSplatBufferSRV;
+
+	/** Number of LOD splats */
+	int32 LODSplatCount = 0;
+
+	/** Whether LOD splats are available */
+	bool bHasLODSplats = false;
+
+	//----------------------------------------------------------------------
+	// Indirect draw resources (GPU-driven rendering)
+	//----------------------------------------------------------------------
+
+	/** Indirect draw argument buffer for GPU-driven rendering
+	 * Structure: IndexCountPerInstance, InstanceCount, StartIndexLocation, BaseVertexLocation, StartInstanceLocation
+	 * Written by cluster culling, read by DrawIndexedPrimitiveIndirect
+	 */
+	FBufferRHIRef IndirectDrawArgsBuffer;
+	FUnorderedAccessViewRHIRef IndirectDrawArgsBufferUAV;
+
+	/** Whether indirect draw is available */
+	bool bSupportsIndirectDraw = false;
+
+	//----------------------------------------------------------------------
+	// Cluster visibility integration resources
+	//----------------------------------------------------------------------
+
+	/** Maps each splat index to its cluster index
+	 * Used by CalcViewData to check if splat's cluster is visible
+	 */
+	FBufferRHIRef SplatClusterIndexBuffer;
+	FShaderResourceViewRHIRef SplatClusterIndexBufferSRV;
+
+	/** Bitmap for cluster visibility (1 bit per cluster)
+	 * Written by cluster culling, read by CalcViewData
+	 * Size: ceil(ClusterCount / 32) uint32s
+	 */
+	FBufferRHIRef ClusterVisibilityBitmap;
+	FUnorderedAccessViewRHIRef ClusterVisibilityBitmapUAV;
+	FShaderResourceViewRHIRef ClusterVisibilityBitmapSRV;
+
 	/** Get position format as uint for shader */
 	uint32 GetPositionFormatUint() const { return static_cast<uint32>(PositionFormat); }
 
@@ -119,12 +197,24 @@ private:
 	/** Create dummy white texture for fallback */
 	void CreateDummyWhiteTexture(FRHICommandListBase& RHICmdList);
 
+	/** Create cluster buffers for Nanite-style culling */
+	void CreateClusterBuffers(FRHICommandListBase& RHICmdList);
+
 private:
 	/** Cached asset data for initialization */
 	TArray<uint8> CachedPositionData;
 	TArray<uint8> CachedOtherData;
 	TArray<uint8> CachedSHData;
 	TArray<FGaussianChunkInfo> CachedChunkData;
+
+	/** Cached cluster data for initialization */
+	TArray<FGaussianGPUCluster> CachedClusterData;
+
+	/** Cached LOD splat data for initialization */
+	TArray<FGaussianGPULODSplat> CachedLODSplatData;
+
+	/** Cached splat-to-cluster index mapping */
+	TArray<uint32> CachedSplatClusterIndices;
 
 	int32 SplatCount = 0;
 	bool bInitialized = false;
@@ -177,6 +267,9 @@ public:
 	float GetOpacityScale() const { return OpacityScale; }
 	float GetSplatScale() const { return SplatScale; }
 
+	/** Draw cluster debug visualization */
+	void DrawClusterDebug(FPrimitiveDrawInterface* PDI, const FSceneView* View) const;
+
 private:
 	/** GPU resources */
 	FGaussianSplatGPUResources* GPUResources = nullptr;
@@ -190,4 +283,14 @@ private:
 	float OpacityScale = 1.0f;
 	float SplatScale = 1.0f;
 	bool bEnableFrustumCulling = true;
+
+	/** Cached cluster data for debug visualization (CPU-side copy) */
+	struct FDebugClusterInfo
+	{
+		FVector Center;
+		float Radius;
+		uint32 LODLevel;
+		uint32 SplatCount;
+	};
+	TArray<FDebugClusterInfo> DebugClusterData;
 };

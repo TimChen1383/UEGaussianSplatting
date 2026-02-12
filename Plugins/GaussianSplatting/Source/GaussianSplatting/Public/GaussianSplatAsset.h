@@ -6,13 +6,15 @@
 #include "UObject/ObjectMacros.h"
 #include "Serialization/BulkData.h"
 #include "GaussianDataTypes.h"
+#include "GaussianClusterTypes.h"
 #include "GaussianSplatAsset.generated.h"
 
 // Asset version for backward compatibility
-#define GAUSSIAN_SPLAT_ASSET_VERSION 2
+#define GAUSSIAN_SPLAT_ASSET_VERSION 3
 #define GAUSSIAN_SPLAT_ASSET_MAGIC 0x47535056  // "GSPV" - Gaussian Splat Version marker
 // Version 1: Original TArray<uint8> serialization (no magic/version header)
 // Version 2: FByteBulkData for large arrays (positions, other, SH, color texture)
+// Version 3: Added cluster hierarchy for Nanite-style LOD and culling
 
 /**
  * Asset containing Gaussian Splatting data loaded from PLY files
@@ -49,6 +51,21 @@ public:
 	/** Check if asset has valid data */
 	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting")
 	bool IsValid() const { return SplatCount > 0 && PositionBulkData.GetBulkDataSize() > 0; }
+
+	/** Check if cluster hierarchy is available */
+	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting|Clustering")
+	bool HasClusterHierarchy() const { return bHasClusterHierarchy && ClusterHierarchy.IsValid(); }
+
+	/** Get number of clusters in hierarchy */
+	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting|Clustering")
+	int32 GetClusterCount() const { return ClusterHierarchy.Clusters.Num(); }
+
+	/** Get number of LOD levels */
+	UFUNCTION(BlueprintCallable, Category = "Gaussian Splatting|Clustering")
+	int32 GetNumLODLevels() const { return ClusterHierarchy.NumLODLevels; }
+
+	/** Get the cluster hierarchy (const reference) */
+	const FGaussianClusterHierarchy& GetClusterHierarchy() const { return ClusterHierarchy; }
 
 public:
 	/** Total number of splats */
@@ -110,6 +127,17 @@ public:
 	/** Quality level used during import */
 	UPROPERTY(VisibleAnywhere, Category = "Import")
 	EGaussianQualityLevel ImportQuality = EGaussianQualityLevel::Medium;
+
+	/**
+	 * Hierarchical cluster structure for Nanite-style LOD and culling
+	 * Built during import, used at runtime for efficient rendering
+	 */
+	UPROPERTY()
+	FGaussianClusterHierarchy ClusterHierarchy;
+
+	/** Whether cluster hierarchy has been built for this asset */
+	UPROPERTY(VisibleAnywhere, Category = "Clustering")
+	bool bHasClusterHierarchy = false;
 
 public:
 	/**

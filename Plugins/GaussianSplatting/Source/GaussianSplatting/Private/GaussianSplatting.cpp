@@ -17,6 +17,33 @@
 
 #define LOCTEXT_NAMESPACE "FGaussianSplattingModule"
 
+//----------------------------------------------------------------------
+// Console Variables for Gaussian Splatting
+//----------------------------------------------------------------------
+
+/** Show cluster bounding spheres for debugging */
+TAutoConsoleVariable<int32> CVarShowClusterBounds(
+	TEXT("gs.ShowClusterBounds"),
+	0,
+	TEXT("Show Gaussian Splat cluster bounding spheres.\n")
+	TEXT(" 0: Off (default)\n")
+	TEXT(" 1: Show leaf clusters only (green)\n")
+	TEXT(" 2: Show all clusters (colored by LOD level)"),
+	ECVF_RenderThreadSafe);
+
+/** Show cluster visibility statistics */
+TAutoConsoleVariable<int32> CVarShowClusterStats(
+	TEXT("gs.ShowClusterStats"),
+	0,
+	TEXT("Show cluster culling statistics on screen.\n")
+	TEXT(" 0: Off (default)\n")
+	TEXT(" 1: On"),
+	ECVF_RenderThreadSafe);
+
+// Export for other modules
+int32 GGaussianSplatShowClusterBounds = 0;
+int32 GGaussianSplatShowClusterStats = 0;
+
 // Helper to get the renderer module
 static IRendererModule& GetRendererModuleRef()
 {

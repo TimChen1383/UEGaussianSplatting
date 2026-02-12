@@ -78,7 +78,46 @@ public:
 		int32 SplatCount
 	);
 
+	/**
+	 * Dispatch cluster culling compute shader (Nanite-style optimization)
+	 * Tests cluster bounding spheres against view frustum
+	 * @return Number of visible clusters (for statistics)
+	 */
+	static int32 DispatchClusterCulling(
+		FRHICommandListImmediate& RHICmdList,
+		const FSceneView& View,
+		FGaussianSplatGPUResources* GPUResources,
+		const FMatrix& LocalToWorld
+	);
+
+	/**
+	 * Dispatch LOD view data calculation compute shader
+	 * Processes LOD splats for clusters that use simplified representations
+	 *
+	 * @param LODSplatStartIndex Start index in LOD splat buffer
+	 * @param LODSplatCount Number of LOD splats to process
+	 * @param OutputStartIndex Start index in ViewDataBuffer (appends after regular splats)
+	 */
+	static void DispatchCalcLODViewData(
+		FRHICommandListImmediate& RHICmdList,
+		const FSceneView& View,
+		FGaussianSplatGPUResources* GPUResources,
+		const FMatrix& LocalToWorld,
+		uint32 LODSplatStartIndex,
+		uint32 LODSplatCount,
+		uint32 OutputStartIndex,
+		float OpacityScale,
+		float SplatScale
+	);
+
 private:
 	/** Calculate next power of 2 */
 	static uint32 NextPowerOfTwo(uint32 Value);
+
+	/**
+	 * Extract frustum planes from view-projection matrix
+	 * Planes are in world space, normalized with normal pointing inward
+	 * Order: Left, Right, Bottom, Top, Near, Far
+	 */
+	static void ExtractFrustumPlanes(const FMatrix& ViewProjection, FVector4f OutPlanes[6]);
 };

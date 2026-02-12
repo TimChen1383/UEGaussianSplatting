@@ -39,6 +39,61 @@ void FGaussianSplatGPUResources::Initialize(UGaussianSplatAsset* Asset)
 	Asset->GetSHData(CachedSHData);
 	CachedChunkData = Asset->ChunkData;
 
+	// Cache cluster hierarchy data if available
+	if (Asset->HasClusterHierarchy())
+	{
+		const FGaussianClusterHierarchy& Hierarchy = Asset->GetClusterHierarchy();
+		Hierarchy.ToGPUClusters(CachedClusterData);
+		ClusterCount = CachedClusterData.Num();
+		LeafClusterCount = Hierarchy.NumLeafClusters;
+		bHasClusterData = true;
+
+		// Build splat-to-cluster index mapping
+		// Each splat needs to know which cluster it belongs to for visibility checks
+		CachedSplatClusterIndices.SetNumZeroed(SplatCount);
+		for (int32 ClusterIdx = 0; ClusterIdx < Hierarchy.Clusters.Num(); ++ClusterIdx)
+		{
+			const FGaussianCluster& Cluster = Hierarchy.Clusters[ClusterIdx];
+			// Only leaf clusters contain original splats
+			if (Cluster.IsLeaf())
+			{
+				for (uint32 i = 0; i < Cluster.SplatCount; ++i)
+				{
+					uint32 SplatIdx = Cluster.SplatStartIndex + i;
+					if (SplatIdx < static_cast<uint32>(SplatCount))
+					{
+						CachedSplatClusterIndices[SplatIdx] = ClusterIdx;
+					}
+				}
+			}
+		}
+
+		// Cache LOD splat data if available
+		if (Hierarchy.LODSplats.Num() > 0)
+		{
+			Hierarchy.ToGPULODSplats(CachedLODSplatData);
+			LODSplatCount = CachedLODSplatData.Num();
+			bHasLODSplats = true;
+			UE_LOG(LogTemp, Log, TEXT("GaussianSplatGPUResources: Loaded %d clusters (%d leaf clusters), %d LOD splats"),
+				ClusterCount, LeafClusterCount, LODSplatCount);
+		}
+		else
+		{
+			bHasLODSplats = false;
+			LODSplatCount = 0;
+			UE_LOG(LogTemp, Log, TEXT("GaussianSplatGPUResources: Loaded %d clusters (%d leaf clusters)"),
+				ClusterCount, LeafClusterCount);
+		}
+	}
+	else
+	{
+		bHasClusterData = false;
+		ClusterCount = 0;
+		LeafClusterCount = 0;
+		bHasLODSplats = false;
+		LODSplatCount = 0;
+	}
+
 	// Initialize render resource
 	if (!bInitialized)
 	{
@@ -57,6 +112,7 @@ void FGaussianSplatGPUResources::InitRHI(FRHICommandListBase& RHICmdList)
 	CreateStaticBuffers(RHICmdList);
 	CreateDynamicBuffers(RHICmdList);
 	CreateIndexBuffer(RHICmdList);
+	CreateClusterBuffers(RHICmdList);
 }
 
 void FGaussianSplatGPUResources::ReleaseRHI()
@@ -92,6 +148,31 @@ void FGaussianSplatGPUResources::ReleaseRHI()
 	ColorTextureSRV.SafeRelease();
 	DummyWhiteTexture.SafeRelease();
 	DummyWhiteTextureSRV.SafeRelease();
+
+	// Release cluster buffers
+	ClusterBuffer.SafeRelease();
+	ClusterBufferSRV.SafeRelease();
+	VisibleClusterBuffer.SafeRelease();
+	VisibleClusterBufferUAV.SafeRelease();
+	VisibleClusterBufferSRV.SafeRelease();
+	VisibleClusterCountBuffer.SafeRelease();
+	VisibleClusterCountBufferUAV.SafeRelease();
+	VisibleClusterCountBufferSRV.SafeRelease();
+
+	// Release LOD splat buffers
+	LODSplatBuffer.SafeRelease();
+	LODSplatBufferSRV.SafeRelease();
+
+	// Release indirect draw buffers
+	IndirectDrawArgsBuffer.SafeRelease();
+	IndirectDrawArgsBufferUAV.SafeRelease();
+
+	// Release cluster visibility integration buffers
+	SplatClusterIndexBuffer.SafeRelease();
+	SplatClusterIndexBufferSRV.SafeRelease();
+	ClusterVisibilityBitmap.SafeRelease();
+	ClusterVisibilityBitmapUAV.SafeRelease();
+	ClusterVisibilityBitmapSRV.SafeRelease();
 
 	bInitialized = false;
 }
@@ -377,6 +458,195 @@ void FGaussianSplatGPUResources::CreateDummyWhiteTexture(FRHICommandListBase& RH
 			.SetDimension(ETextureDimension::Texture2D));
 }
 
+void FGaussianSplatGPUResources::CreateClusterBuffers(FRHICommandListBase& RHICmdList)
+{
+	if (!bHasClusterData || CachedClusterData.Num() == 0)
+	{
+		return;
+	}
+
+	// Create cluster buffer (static, read-only)
+	{
+		const uint32 BufferSize = CachedClusterData.Num() * sizeof(FGaussianGPUCluster);
+		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
+			TEXT("GaussianClusterBuffer"),
+			BufferSize,
+			sizeof(FGaussianGPUCluster),
+			BUF_Static | BUF_ShaderResource | BUF_StructuredBuffer)
+			.SetInitialState(ERHIAccess::SRVMask);
+		ClusterBuffer = RHICmdList.CreateBuffer(Desc);
+
+		void* Data = RHICmdList.LockBuffer(ClusterBuffer, 0, BufferSize, RLM_WriteOnly);
+		FMemory::Memcpy(Data, CachedClusterData.GetData(), BufferSize);
+		RHICmdList.UnlockBuffer(ClusterBuffer);
+
+		ClusterBufferSRV = RHICmdList.CreateShaderResourceView(
+			ClusterBuffer, FRHIViewDesc::CreateBufferSRV()
+				.SetType(FRHIViewDesc::EBufferType::Structured)
+				.SetStride(sizeof(FGaussianGPUCluster)));
+	}
+
+	// Create visible cluster buffer (dynamic, written by culling shader)
+	// Size = max possible visible clusters (all clusters could be visible)
+	{
+		const uint32 BufferSize = ClusterCount * sizeof(uint32);
+		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
+			TEXT("GaussianVisibleClusterBuffer"),
+			BufferSize,
+			sizeof(uint32),
+			BUF_UnorderedAccess | BUF_ShaderResource | BUF_StructuredBuffer)
+			.SetInitialState(ERHIAccess::UAVCompute);
+		VisibleClusterBuffer = RHICmdList.CreateBuffer(Desc);
+
+		VisibleClusterBufferUAV = RHICmdList.CreateUnorderedAccessView(
+			VisibleClusterBuffer, FRHIViewDesc::CreateBufferUAV()
+				.SetType(FRHIViewDesc::EBufferType::Structured)
+				.SetStride(sizeof(uint32)));
+		VisibleClusterBufferSRV = RHICmdList.CreateShaderResourceView(
+			VisibleClusterBuffer, FRHIViewDesc::CreateBufferSRV()
+				.SetType(FRHIViewDesc::EBufferType::Structured)
+				.SetStride(sizeof(uint32)));
+	}
+
+	// Create visible cluster count buffer (single uint, atomic counter)
+	{
+		const uint32 BufferSize = sizeof(uint32);
+		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
+			TEXT("GaussianVisibleClusterCountBuffer"),
+			BufferSize,
+			sizeof(uint32),
+			BUF_UnorderedAccess | BUF_ShaderResource | BUF_StructuredBuffer)
+			.SetInitialState(ERHIAccess::UAVCompute);
+		VisibleClusterCountBuffer = RHICmdList.CreateBuffer(Desc);
+
+		VisibleClusterCountBufferUAV = RHICmdList.CreateUnorderedAccessView(
+			VisibleClusterCountBuffer, FRHIViewDesc::CreateBufferUAV()
+				.SetType(FRHIViewDesc::EBufferType::Structured)
+				.SetStride(sizeof(uint32)));
+		VisibleClusterCountBufferSRV = RHICmdList.CreateShaderResourceView(
+			VisibleClusterCountBuffer, FRHIViewDesc::CreateBufferSRV()
+				.SetType(FRHIViewDesc::EBufferType::Structured)
+				.SetStride(sizeof(uint32)));
+	}
+
+	// Clear cached cluster data
+	CachedClusterData.Empty();
+
+	// Create LOD splat buffer if available
+	if (bHasLODSplats && CachedLODSplatData.Num() > 0)
+	{
+		const uint32 BufferSize = CachedLODSplatData.Num() * sizeof(FGaussianGPULODSplat);
+		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
+			TEXT("GaussianLODSplatBuffer"),
+			BufferSize,
+			sizeof(FGaussianGPULODSplat),
+			BUF_Static | BUF_ShaderResource | BUF_StructuredBuffer)
+			.SetInitialState(ERHIAccess::SRVMask);
+		LODSplatBuffer = RHICmdList.CreateBuffer(Desc);
+
+		void* Data = RHICmdList.LockBuffer(LODSplatBuffer, 0, BufferSize, RLM_WriteOnly);
+		FMemory::Memcpy(Data, CachedLODSplatData.GetData(), BufferSize);
+		RHICmdList.UnlockBuffer(LODSplatBuffer);
+
+		LODSplatBufferSRV = RHICmdList.CreateShaderResourceView(
+			LODSplatBuffer, FRHIViewDesc::CreateBufferSRV()
+				.SetType(FRHIViewDesc::EBufferType::Structured)
+				.SetStride(sizeof(FGaussianGPULODSplat)));
+
+		UE_LOG(LogTemp, Log, TEXT("GaussianSplatGPUResources: Created LOD splat buffer with %d splats (%d bytes)"),
+			LODSplatCount, BufferSize);
+	}
+
+	// Clear cached LOD splat data
+	CachedLODSplatData.Empty();
+
+	// Create indirect draw argument buffer for GPU-driven rendering
+	// Structure: IndexCountPerInstance(4), InstanceCount(4), StartIndexLocation(4), BaseVertexLocation(4), StartInstanceLocation(4)
+	// Total: 20 bytes, but we use 32 bytes for alignment
+	{
+		const uint32 BufferSize = 32;  // 5 uints + padding for alignment
+		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
+			TEXT("GaussianIndirectDrawArgsBuffer"),
+			BufferSize,
+			sizeof(uint32),
+			BUF_UnorderedAccess | BUF_DrawIndirect | BUF_StructuredBuffer)
+			.SetInitialState(ERHIAccess::IndirectArgs);
+		IndirectDrawArgsBuffer = RHICmdList.CreateBuffer(Desc);
+
+		// Initialize with default values
+		// IndexCountPerInstance = 6 (2 triangles per quad)
+		// InstanceCount = SplatCount (will be updated by culling shader)
+		// StartIndexLocation = 0
+		// BaseVertexLocation = 0
+		// StartInstanceLocation = 0
+		uint32 InitData[8] = { 6, (uint32)SplatCount, 0, 0, 0, 0, 0, 0 };
+		void* Data = RHICmdList.LockBuffer(IndirectDrawArgsBuffer, 0, BufferSize, RLM_WriteOnly);
+		FMemory::Memcpy(Data, InitData, BufferSize);
+		RHICmdList.UnlockBuffer(IndirectDrawArgsBuffer);
+
+		IndirectDrawArgsBufferUAV = RHICmdList.CreateUnorderedAccessView(
+			IndirectDrawArgsBuffer, FRHIViewDesc::CreateBufferUAV()
+				.SetType(FRHIViewDesc::EBufferType::Structured)
+				.SetStride(sizeof(uint32)));
+
+		bSupportsIndirectDraw = true;
+		UE_LOG(LogTemp, Log, TEXT("GaussianSplatGPUResources: Created indirect draw buffer"));
+	}
+
+	// Create splat-to-cluster index buffer
+	if (CachedSplatClusterIndices.Num() > 0)
+	{
+		const uint32 BufferSize = CachedSplatClusterIndices.Num() * sizeof(uint32);
+		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
+			TEXT("GaussianSplatClusterIndexBuffer"),
+			BufferSize,
+			sizeof(uint32),
+			BUF_Static | BUF_ShaderResource | BUF_StructuredBuffer)
+			.SetInitialState(ERHIAccess::SRVMask);
+		SplatClusterIndexBuffer = RHICmdList.CreateBuffer(Desc);
+
+		void* Data = RHICmdList.LockBuffer(SplatClusterIndexBuffer, 0, BufferSize, RLM_WriteOnly);
+		FMemory::Memcpy(Data, CachedSplatClusterIndices.GetData(), BufferSize);
+		RHICmdList.UnlockBuffer(SplatClusterIndexBuffer);
+
+		SplatClusterIndexBufferSRV = RHICmdList.CreateShaderResourceView(
+			SplatClusterIndexBuffer, FRHIViewDesc::CreateBufferSRV()
+				.SetType(FRHIViewDesc::EBufferType::Structured)
+				.SetStride(sizeof(uint32)));
+
+		UE_LOG(LogTemp, Log, TEXT("GaussianSplatGPUResources: Created splat-to-cluster index buffer for %d splats"), CachedSplatClusterIndices.Num());
+	}
+	CachedSplatClusterIndices.Empty();
+
+	// Create cluster visibility bitmap buffer
+	// One bit per cluster, rounded up to uint32 boundary
+	{
+		uint32 BitmapSize = FMath::DivideAndRoundUp(ClusterCount, 32) * sizeof(uint32);
+		BitmapSize = FMath::Max(BitmapSize, (uint32)sizeof(uint32));  // At least one uint32
+
+		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
+			TEXT("GaussianClusterVisibilityBitmap"),
+			BitmapSize,
+			sizeof(uint32),
+			BUF_UnorderedAccess | BUF_ShaderResource | BUF_StructuredBuffer)
+			.SetInitialState(ERHIAccess::UAVCompute);
+		ClusterVisibilityBitmap = RHICmdList.CreateBuffer(Desc);
+
+		ClusterVisibilityBitmapUAV = RHICmdList.CreateUnorderedAccessView(
+			ClusterVisibilityBitmap, FRHIViewDesc::CreateBufferUAV()
+				.SetType(FRHIViewDesc::EBufferType::Structured)
+				.SetStride(sizeof(uint32)));
+		ClusterVisibilityBitmapSRV = RHICmdList.CreateShaderResourceView(
+			ClusterVisibilityBitmap, FRHIViewDesc::CreateBufferSRV()
+				.SetType(FRHIViewDesc::EBufferType::Structured)
+				.SetStride(sizeof(uint32)));
+
+		UE_LOG(LogTemp, Log, TEXT("GaussianSplatGPUResources: Created cluster visibility bitmap (%d bytes for %d clusters)"), BitmapSize, ClusterCount);
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("GaussianSplatGPUResources: Created cluster buffers for %d clusters"), ClusterCount);
+}
+
 //////////////////////////////////////////////////////////////////////////
 // FGaussianSplatSceneProxy
 
@@ -390,6 +660,23 @@ FGaussianSplatSceneProxy::FGaussianSplatSceneProxy(const UGaussianSplatComponent
 	, bEnableFrustumCulling(InComponent->bEnableFrustumCulling)
 {
 	bWillEverBeLit = false;
+
+	// Cache cluster data for debug visualization
+	if (CachedAsset && CachedAsset->HasClusterHierarchy())
+	{
+		const FGaussianClusterHierarchy& Hierarchy = CachedAsset->GetClusterHierarchy();
+		DebugClusterData.Reserve(Hierarchy.Clusters.Num());
+
+		for (const FGaussianCluster& Cluster : Hierarchy.Clusters)
+		{
+			FDebugClusterInfo Info;
+			Info.Center = FVector(Cluster.BoundingSphereCenter.X, Cluster.BoundingSphereCenter.Y, Cluster.BoundingSphereCenter.Z);
+			Info.Radius = Cluster.BoundingSphereRadius;
+			Info.LODLevel = Cluster.LODLevel;
+			Info.SplatCount = Cluster.SplatCount;
+			DebugClusterData.Add(Info);
+		}
+	}
 }
 
 FGaussianSplatSceneProxy::~FGaussianSplatSceneProxy()
@@ -427,21 +714,27 @@ void FGaussianSplatSceneProxy::GetDynamicMeshElements(
 	uint32 VisibilityMap,
 	FMeshElementCollector& Collector) const
 {
-	// Gaussian splatting uses custom rendering via PostOpaqueRender delegate
-	// Only draw debug bounds when selected
-	if (!IsSelected())
-	{
-		return;
-	}
+	// Check if cluster debug visualization is enabled
+	const int32 ShowClusterBounds = CVarShowClusterBounds.GetValueOnRenderThread();
 
 	for (int32 ViewIndex = 0; ViewIndex < Views.Num(); ViewIndex++)
 	{
 		if (VisibilityMap & (1 << ViewIndex))
 		{
 			FPrimitiveDrawInterface* PDI = Collector.GetPDI(ViewIndex);
+			const FSceneView* View = Views[ViewIndex];
 
 			// Draw bounds when selected
-			RenderBounds(PDI, ViewFamily.EngineShowFlags, GetBounds(), true);
+			if (IsSelected())
+			{
+				RenderBounds(PDI, ViewFamily.EngineShowFlags, GetBounds(), true);
+			}
+
+			// Draw cluster debug visualization if enabled
+			if (ShowClusterBounds > 0)
+			{
+				DrawClusterDebug(PDI, View);
+			}
 		}
 	}
 }
@@ -550,5 +843,87 @@ void FGaussianSplatSceneProxy::TryInitializeColorTexture(FRHICommandListBase& RH
 			GPUResources->ColorTexture,
 			FRHIViewDesc::CreateTextureSRV()
 				.SetDimension(ETextureDimension::Texture2D));
+	}
+}
+
+void FGaussianSplatSceneProxy::DrawClusterDebug(FPrimitiveDrawInterface* PDI, const FSceneView* View) const
+{
+	if (DebugClusterData.Num() == 0)
+	{
+		return;
+	}
+
+	const int32 ShowClusterBounds = CVarShowClusterBounds.GetValueOnRenderThread();
+	const FMatrix LocalToWorldMatrix = GetLocalToWorld();
+
+	// Define colors for different LOD levels
+	static const FLinearColor LODColors[] = {
+		FLinearColor::Green,   // LOD 0 (leaf clusters)
+		FLinearColor::Yellow,  // LOD 1
+		FLinearColor(1.0f, 0.5f, 0.0f),  // LOD 2 (orange)
+		FLinearColor::Red,     // LOD 3
+		FLinearColor(0.5f, 0.0f, 0.5f),  // LOD 4 (purple)
+		FLinearColor::Blue,    // LOD 5+
+	};
+	const int32 NumLODColors = UE_ARRAY_COUNT(LODColors);
+
+	for (const FDebugClusterInfo& ClusterInfo : DebugClusterData)
+	{
+		// Mode 1: Show only leaf clusters (LOD 0)
+		// Mode 2: Show all clusters
+		if (ShowClusterBounds == 1 && ClusterInfo.LODLevel > 0)
+		{
+			continue;
+		}
+
+		// Transform cluster center to world space
+		FVector WorldCenter = LocalToWorldMatrix.TransformPosition(ClusterInfo.Center);
+
+		// Scale radius by transform (approximate, use max scale component)
+		FVector Scale = LocalToWorldMatrix.GetScaleVector();
+		float WorldRadius = ClusterInfo.Radius * Scale.GetMax();
+
+		// Frustum cull debug spheres for performance
+		if (!View->ViewFrustum.IntersectSphere(WorldCenter, WorldRadius))
+		{
+			continue;
+		}
+
+		// Select color based on LOD level
+		int32 ColorIndex = FMath::Min((int32)ClusterInfo.LODLevel, NumLODColors - 1);
+		FLinearColor Color = LODColors[ColorIndex];
+
+		// Draw wireframe sphere using circle approximation
+		const int32 NumSegments = 16;
+		const float AngleStep = 2.0f * PI / NumSegments;
+
+		// Draw three orthogonal circles (XY, XZ, YZ planes)
+		for (int32 Plane = 0; Plane < 3; Plane++)
+		{
+			for (int32 i = 0; i < NumSegments; i++)
+			{
+				float Angle1 = i * AngleStep;
+				float Angle2 = (i + 1) * AngleStep;
+
+				FVector P1, P2;
+				switch (Plane)
+				{
+				case 0: // XY plane
+					P1 = WorldCenter + FVector(FMath::Cos(Angle1), FMath::Sin(Angle1), 0.0f) * WorldRadius;
+					P2 = WorldCenter + FVector(FMath::Cos(Angle2), FMath::Sin(Angle2), 0.0f) * WorldRadius;
+					break;
+				case 1: // XZ plane
+					P1 = WorldCenter + FVector(FMath::Cos(Angle1), 0.0f, FMath::Sin(Angle1)) * WorldRadius;
+					P2 = WorldCenter + FVector(FMath::Cos(Angle2), 0.0f, FMath::Sin(Angle2)) * WorldRadius;
+					break;
+				case 2: // YZ plane
+					P1 = WorldCenter + FVector(0.0f, FMath::Cos(Angle1), FMath::Sin(Angle1)) * WorldRadius;
+					P2 = WorldCenter + FVector(0.0f, FMath::Cos(Angle2), FMath::Sin(Angle2)) * WorldRadius;
+					break;
+				}
+
+				PDI->DrawLine(P1, P2, Color, SDPG_World, 1.0f);
+			}
+		}
 	}
 }

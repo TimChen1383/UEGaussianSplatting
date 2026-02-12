@@ -8,6 +8,7 @@
 #include "RenderGraphResources.h"
 #include "RenderGraphBuilder.h"
 #include "GaussianDataTypes.h"
+#include "GaussianClusterTypes.h"
 
 /**
  * Compute shader for calculating view-dependent data for each Gaussian splat
@@ -26,6 +27,11 @@ class FGaussianSplatCalcViewDataCS : public FGlobalShader
 		SHADER_PARAMETER_SRV(Texture2D, ColorTexture)
 		SHADER_PARAMETER_SAMPLER(SamplerState, ColorSampler)
 		SHADER_PARAMETER_UAV(RWStructuredBuffer<FGaussianSplatViewData>, ViewDataBuffer)
+		// Cluster visibility integration
+		SHADER_PARAMETER_SRV(StructuredBuffer<uint>, SplatClusterIndexBuffer)
+		SHADER_PARAMETER_SRV(StructuredBuffer<uint>, ClusterVisibilityBitmap)
+		SHADER_PARAMETER(uint32, UseClusterCulling)
+		// Transform matrices
 		SHADER_PARAMETER(FMatrix44f, LocalToWorld)
 		SHADER_PARAMETER(FMatrix44f, WorldToClip)
 		SHADER_PARAMETER(FMatrix44f, WorldToView)
@@ -39,6 +45,42 @@ class FGaussianSplatCalcViewDataCS : public FGlobalShader
 		SHADER_PARAMETER(FIntPoint, ColorTextureSize)
 		SHADER_PARAMETER(uint32, PositionFormat)
 		SHADER_PARAMETER(uint32, UseDefaultColor)  // 1 = use default color (no texture), 0 = use texture
+	END_SHADER_PARAMETER_STRUCT()
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+	}
+
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZE"), 256);
+	}
+};
+
+/**
+ * Compute shader for calculating view-dependent data for LOD splats
+ * Simplified version without SH evaluation - uses pre-computed colors
+ */
+class FGaussianSplatCalcLODViewDataCS : public FGlobalShader
+{
+	DECLARE_GLOBAL_SHADER(FGaussianSplatCalcLODViewDataCS);
+	SHADER_USE_PARAMETER_STRUCT(FGaussianSplatCalcLODViewDataCS, FGlobalShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_SRV(StructuredBuffer<FGaussianGPULODSplat>, LODSplatBuffer)
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<FGaussianSplatViewData>, ViewDataBuffer)
+		SHADER_PARAMETER(FMatrix44f, LocalToWorld)
+		SHADER_PARAMETER(FMatrix44f, WorldToClip)
+		SHADER_PARAMETER(FMatrix44f, WorldToView)
+		SHADER_PARAMETER(FVector2f, ScreenSize)
+		SHADER_PARAMETER(FVector2f, FocalLength)
+		SHADER_PARAMETER(uint32, LODSplatStartIndex)
+		SHADER_PARAMETER(uint32, LODSplatCount)
+		SHADER_PARAMETER(uint32, OutputStartIndex)
+		SHADER_PARAMETER(float, SplatScale)
+		SHADER_PARAMETER(float, OpacityScale)
 	END_SHADER_PARAMETER_STRUCT()
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
@@ -225,5 +267,71 @@ class FRadixSortScatterCS : public FGlobalShader
 	{
 		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 		OutEnvironment.SetDefine(TEXT("SCATTER_CS"), 1);
+	}
+};
+
+//----------------------------------------------------------------------
+// Cluster Culling Shaders (Nanite-style optimization)
+//----------------------------------------------------------------------
+
+/**
+ * Compute shader to reset the visible cluster counter, indirect draw args, and visibility bitmap
+ */
+class FClusterCullingResetCS : public FGlobalShader
+{
+	DECLARE_GLOBAL_SHADER(FClusterCullingResetCS);
+	SHADER_USE_PARAMETER_STRUCT(FClusterCullingResetCS, FGlobalShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, VisibleClusterCountBuffer)
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, IndirectDrawArgsBuffer)
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, ClusterVisibilityBitmap)
+		SHADER_PARAMETER(uint32, ClusterVisibilityBitmapSize)
+	END_SHADER_PARAMETER_STRUCT()
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+	}
+};
+
+/**
+ * Compute shader for frustum culling and LOD selection of clusters
+ * Tests each cluster's bounding sphere against the view frustum
+ * Calculates screen-space error for LOD selection
+ * Outputs list of visible cluster indices with LOD flags
+ */
+class FClusterCullingCS : public FGlobalShader
+{
+	DECLARE_GLOBAL_SHADER(FClusterCullingCS);
+	SHADER_USE_PARAMETER_STRUCT(FClusterCullingCS, FGlobalShader);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER_SRV(StructuredBuffer<FGaussianGPUCluster>, ClusterBuffer)
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, VisibleClusterBuffer)
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, VisibleClusterCountBuffer)
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, IndirectDrawArgsBuffer)
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, ClusterVisibilityBitmap)
+		SHADER_PARAMETER(FMatrix44f, LocalToWorld)
+		SHADER_PARAMETER(FMatrix44f, WorldToClip)
+		SHADER_PARAMETER(uint32, ClusterCount)
+		SHADER_PARAMETER(uint32, LeafClusterCount)
+		SHADER_PARAMETER_ARRAY(FVector4f, FrustumPlanes, [6])
+		// LOD selection parameters
+		SHADER_PARAMETER(FVector3f, CameraPosition)
+		SHADER_PARAMETER(float, ScreenHeight)
+		SHADER_PARAMETER(float, ErrorThreshold)
+		SHADER_PARAMETER(float, LODBias)
+	END_SHADER_PARAMETER_STRUCT()
+
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
+	{
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+	}
+
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters, FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FGlobalShader::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		OutEnvironment.SetDefine(TEXT("THREADGROUP_SIZE"), 64);
 	}
 };

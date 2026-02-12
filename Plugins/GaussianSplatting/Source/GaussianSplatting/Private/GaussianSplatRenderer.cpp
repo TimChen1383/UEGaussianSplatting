@@ -65,6 +65,15 @@ void FGaussianSplatRenderer::Render(
 
 	if (!bCanSkipCompute)
 	{
+		// Step 0: Cluster culling (Nanite-style optimization)
+		// Currently runs for statistics/validation; future: skip culled clusters in CalcViewData
+		if (GPUResources->bHasClusterData)
+		{
+			int32 VisibleClusters = DispatchClusterCulling(RHICmdList, View, GPUResources, LocalToWorld);
+			// Uncomment for debug logging:
+			// UE_LOG(LogTemp, Log, TEXT("Cluster culling: %d / %d clusters visible"), VisibleClusters, GPUResources->LeafClusterCount);
+		}
+
 		// Step 1: Calculate view data for each splat
 		DispatchCalcViewData(RHICmdList, View, GPUResources, LocalToWorld, SplatCount, SHOrder, OpacityScale, SplatScale, bHasColorTexture);
 
@@ -119,6 +128,21 @@ void FGaussianSplatRenderer::DispatchCalcViewData(
 	Parameters.ColorTexture = GPUResources->GetColorTextureSRVOrDummy();  // Uses dummy texture if real one not available
 	Parameters.ColorSampler = TStaticSamplerState<SF_Point, AM_Clamp, AM_Clamp, AM_Clamp>::GetRHI();
 	Parameters.ViewDataBuffer = GPUResources->ViewDataBufferUAV;
+
+	// Cluster visibility integration
+	if (GPUResources->bHasClusterData && GPUResources->SplatClusterIndexBufferSRV.IsValid())
+	{
+		Parameters.SplatClusterIndexBuffer = GPUResources->SplatClusterIndexBufferSRV;
+		Parameters.ClusterVisibilityBitmap = GPUResources->ClusterVisibilityBitmapSRV;
+		Parameters.UseClusterCulling = 1;
+	}
+	else
+	{
+		// No cluster data - process all splats
+		Parameters.SplatClusterIndexBuffer = nullptr;
+		Parameters.ClusterVisibilityBitmap = nullptr;
+		Parameters.UseClusterCulling = 0;
+	}
 
 	// Matrices
 	Parameters.LocalToWorld = FMatrix44f(LocalToWorld);
@@ -405,16 +429,279 @@ void FGaussianSplatRenderer::DrawSplats(
 	SetShaderParameters(RHICmdList, PixelShader, PixelShader.GetPixelShader(), PSParameters);
 
 	// Draw instanced quads
-	// 4 vertices per quad, SplatCount instances
+	// 4 vertices per quad, N instances (either from SplatCount or indirect args)
 	// Using index buffer: 6 indices per quad (2 triangles)
 	RHICmdList.SetStreamSource(0, nullptr, 0);
-	RHICmdList.DrawIndexedPrimitive(
-		GPUResources->IndexBuffer,
-		0,  // BaseVertexIndex
-		0,  // FirstInstance
-		4,  // NumVertices
-		0,  // StartIndex
-		2,  // NumPrimitives (2 triangles per quad)
-		SplatCount  // NumInstances
+
+	// Use indirect draw when cluster culling is available
+	// This allows the GPU to determine how many instances to draw
+	if (GPUResources->bSupportsIndirectDraw && GPUResources->bHasClusterData)
+	{
+		// GPU-driven rendering: instance count comes from cluster culling results
+		RHICmdList.DrawIndexedPrimitiveIndirect(
+			GPUResources->IndexBuffer,
+			GPUResources->IndirectDrawArgsBuffer,
+			0  // ArgumentOffset
+		);
+	}
+	else
+	{
+		// Fallback: CPU-driven rendering with fixed splat count
+		RHICmdList.DrawIndexedPrimitive(
+			GPUResources->IndexBuffer,
+			0,  // BaseVertexIndex
+			0,  // FirstInstance
+			4,  // NumVertices
+			0,  // StartIndex
+			2,  // NumPrimitives (2 triangles per quad)
+			SplatCount  // NumInstances
+		);
+	}
+}
+
+void FGaussianSplatRenderer::DispatchCalcLODViewData(
+	FRHICommandListImmediate& RHICmdList,
+	const FSceneView& View,
+	FGaussianSplatGPUResources* GPUResources,
+	const FMatrix& LocalToWorld,
+	uint32 LODSplatStartIndex,
+	uint32 LODSplatCount,
+	uint32 OutputStartIndex,
+	float OpacityScale,
+	float SplatScale)
+{
+	SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatCalcLODViewData);
+
+	if (!GPUResources || !GPUResources->bHasLODSplats || LODSplatCount == 0)
+	{
+		return;
+	}
+
+	TShaderMapRef<FGaussianSplatCalcLODViewDataCS> ComputeShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+
+	if (!ComputeShader.IsValid())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FGaussianSplatCalcLODViewDataCS shader not valid"));
+		return;
+	}
+
+	FGaussianSplatCalcLODViewDataCS::FParameters Parameters;
+	Parameters.LODSplatBuffer = GPUResources->LODSplatBufferSRV;
+	Parameters.ViewDataBuffer = GPUResources->ViewDataBufferUAV;
+
+	// Matrices
+	Parameters.LocalToWorld = FMatrix44f(LocalToWorld);
+	Parameters.WorldToClip = FMatrix44f(View.ViewMatrices.GetViewProjectionMatrix());
+	Parameters.WorldToView = FMatrix44f(View.ViewMatrices.GetViewMatrix());
+
+	// Screen info
+	FIntRect ViewRect = View.UnscaledViewRect;
+	Parameters.ScreenSize = FVector2f(ViewRect.Width(), ViewRect.Height());
+
+	// Focal length from projection matrix
+	const FMatrix& ProjMatrix = View.ViewMatrices.GetProjectionMatrix();
+	Parameters.FocalLength = FVector2f(
+		ProjMatrix.M[0][0] * ViewRect.Width() * 0.5f,
+		ProjMatrix.M[1][1] * ViewRect.Height() * 0.5f
 	);
+
+	Parameters.LODSplatStartIndex = LODSplatStartIndex;
+	Parameters.LODSplatCount = LODSplatCount;
+	Parameters.OutputStartIndex = OutputStartIndex;
+	Parameters.SplatScale = SplatScale;
+	Parameters.OpacityScale = OpacityScale;
+
+	// Dispatch compute shader
+	const uint32 ThreadGroupSize = 256;
+	const uint32 NumGroups = FMath::DivideAndRoundUp(LODSplatCount, ThreadGroupSize);
+
+	SetComputePipelineState(RHICmdList, ComputeShader.GetComputeShader());
+	SetShaderParameters(RHICmdList, ComputeShader, ComputeShader.GetComputeShader(), Parameters);
+	RHICmdList.DispatchComputeShader(NumGroups, 1, 1);
+	UnsetShaderUAVs(RHICmdList, ComputeShader, ComputeShader.GetComputeShader());
+}
+
+void FGaussianSplatRenderer::ExtractFrustumPlanes(const FMatrix& ViewProjection, FVector4f OutPlanes[6])
+{
+	// Extract frustum planes from view-projection matrix
+	// Using the Gribb/Hartmann method
+	// Each row of VP matrix gives us coefficients for a plane equation
+	// Plane equation: dot(Normal, P) + D = 0
+
+	const FMatrix& M = ViewProjection;
+
+	// Left plane: Row3 + Row0
+	OutPlanes[0] = FVector4f(
+		M.M[0][3] + M.M[0][0],
+		M.M[1][3] + M.M[1][0],
+		M.M[2][3] + M.M[2][0],
+		M.M[3][3] + M.M[3][0]
+	);
+
+	// Right plane: Row3 - Row0
+	OutPlanes[1] = FVector4f(
+		M.M[0][3] - M.M[0][0],
+		M.M[1][3] - M.M[1][0],
+		M.M[2][3] - M.M[2][0],
+		M.M[3][3] - M.M[3][0]
+	);
+
+	// Bottom plane: Row3 + Row1
+	OutPlanes[2] = FVector4f(
+		M.M[0][3] + M.M[0][1],
+		M.M[1][3] + M.M[1][1],
+		M.M[2][3] + M.M[2][1],
+		M.M[3][3] + M.M[3][1]
+	);
+
+	// Top plane: Row3 - Row1
+	OutPlanes[3] = FVector4f(
+		M.M[0][3] - M.M[0][1],
+		M.M[1][3] - M.M[1][1],
+		M.M[2][3] - M.M[2][1],
+		M.M[3][3] - M.M[3][1]
+	);
+
+	// Near plane: Row3 + Row2 (for reversed-Z: Row2)
+	OutPlanes[4] = FVector4f(
+		M.M[0][2],
+		M.M[1][2],
+		M.M[2][2],
+		M.M[3][2]
+	);
+
+	// Far plane: Row3 - Row2
+	OutPlanes[5] = FVector4f(
+		M.M[0][3] - M.M[0][2],
+		M.M[1][3] - M.M[1][2],
+		M.M[2][3] - M.M[2][2],
+		M.M[3][3] - M.M[3][2]
+	);
+
+	// Normalize planes (important for distance calculations)
+	for (int32 i = 0; i < 6; i++)
+	{
+		float Length = FMath::Sqrt(
+			OutPlanes[i].X * OutPlanes[i].X +
+			OutPlanes[i].Y * OutPlanes[i].Y +
+			OutPlanes[i].Z * OutPlanes[i].Z
+		);
+		if (Length > SMALL_NUMBER)
+		{
+			OutPlanes[i] = OutPlanes[i] / Length;
+		}
+	}
+}
+
+int32 FGaussianSplatRenderer::DispatchClusterCulling(
+	FRHICommandListImmediate& RHICmdList,
+	const FSceneView& View,
+	FGaussianSplatGPUResources* GPUResources,
+	const FMatrix& LocalToWorld)
+{
+	SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatClusterCulling);
+
+	if (!GPUResources->bHasClusterData || GPUResources->ClusterCount <= 0)
+	{
+		return 0;
+	}
+
+	TShaderMapRef<FClusterCullingResetCS> ResetShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+	TShaderMapRef<FClusterCullingCS> CullingShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+
+	if (!ResetShader.IsValid() || !CullingShader.IsValid())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Cluster culling shaders not valid"));
+		return 0;
+	}
+
+	// Calculate visibility bitmap size
+	uint32 VisibilityBitmapSize = FMath::DivideAndRoundUp(GPUResources->ClusterCount, 32);
+	VisibilityBitmapSize = FMath::Max(VisibilityBitmapSize, 1u);
+
+	// Transition buffers for compute
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->VisibleClusterBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->VisibleClusterCountBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->ClusterVisibilityBitmap, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+	if (GPUResources->bSupportsIndirectDraw)
+	{
+		RHICmdList.Transition(FRHITransitionInfo(GPUResources->IndirectDrawArgsBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+	}
+
+	// Step 1: Reset the visible cluster counter, indirect draw args, and visibility bitmap
+	{
+		FClusterCullingResetCS::FParameters ResetParams;
+		ResetParams.VisibleClusterCountBuffer = GPUResources->VisibleClusterCountBufferUAV;
+		ResetParams.IndirectDrawArgsBuffer = GPUResources->IndirectDrawArgsBufferUAV;
+		ResetParams.ClusterVisibilityBitmap = GPUResources->ClusterVisibilityBitmapUAV;
+		ResetParams.ClusterVisibilityBitmapSize = VisibilityBitmapSize;
+
+		// Dispatch enough threads to clear the bitmap
+		uint32 NumGroups = FMath::DivideAndRoundUp(VisibilityBitmapSize, 64u);
+
+		SetComputePipelineState(RHICmdList, ResetShader.GetComputeShader());
+		SetShaderParameters(RHICmdList, ResetShader, ResetShader.GetComputeShader(), ResetParams);
+		RHICmdList.DispatchComputeShader(NumGroups, 1, 1);
+		UnsetShaderUAVs(RHICmdList, ResetShader, ResetShader.GetComputeShader());
+	}
+
+	// UAV barrier
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->VisibleClusterCountBuffer, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->ClusterVisibilityBitmap, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
+
+	// Step 2: Run cluster culling with LOD selection
+	{
+		// Extract frustum planes from combined local-to-clip matrix
+		FMatrix LocalToClip = LocalToWorld * View.ViewMatrices.GetViewProjectionMatrix();
+		FVector4f FrustumPlanes[6];
+		ExtractFrustumPlanes(LocalToClip, FrustumPlanes);
+
+		FClusterCullingCS::FParameters CullingParams;
+		CullingParams.ClusterBuffer = GPUResources->ClusterBufferSRV;
+		CullingParams.VisibleClusterBuffer = GPUResources->VisibleClusterBufferUAV;
+		CullingParams.VisibleClusterCountBuffer = GPUResources->VisibleClusterCountBufferUAV;
+		CullingParams.IndirectDrawArgsBuffer = GPUResources->IndirectDrawArgsBufferUAV;
+		CullingParams.ClusterVisibilityBitmap = GPUResources->ClusterVisibilityBitmapUAV;
+		CullingParams.LocalToWorld = FMatrix44f(LocalToWorld);
+		CullingParams.WorldToClip = FMatrix44f(View.ViewMatrices.GetViewProjectionMatrix());
+		CullingParams.ClusterCount = GPUResources->ClusterCount;
+		CullingParams.LeafClusterCount = GPUResources->LeafClusterCount;
+
+		for (int32 i = 0; i < 6; i++)
+		{
+			CullingParams.FrustumPlanes[i] = FrustumPlanes[i];
+		}
+
+		// LOD selection parameters
+		CullingParams.CameraPosition = FVector3f(View.ViewMatrices.GetViewOrigin());
+		FIntRect ViewRect = View.UnscaledViewRect;
+		CullingParams.ScreenHeight = static_cast<float>(ViewRect.Height());
+		CullingParams.ErrorThreshold = 1.0f;  // 1 pixel error threshold (can be made configurable)
+		CullingParams.LODBias = 0.0f;         // No bias (can be made configurable)
+
+		const uint32 ThreadGroupSize = 64;
+		const uint32 NumGroups = FMath::DivideAndRoundUp((uint32)GPUResources->LeafClusterCount, ThreadGroupSize);
+
+		SetComputePipelineState(RHICmdList, CullingShader.GetComputeShader());
+		SetShaderParameters(RHICmdList, CullingShader, CullingShader.GetComputeShader(), CullingParams);
+		RHICmdList.DispatchComputeShader(NumGroups, 1, 1);
+		UnsetShaderUAVs(RHICmdList, CullingShader, CullingShader.GetComputeShader());
+	}
+
+	// Transition for potential readback (for debugging/statistics)
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->VisibleClusterCountBuffer, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->VisibleClusterBuffer, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
+
+	// Transition visibility bitmap for CalcViewData to read
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->ClusterVisibilityBitmap, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
+
+	// Transition indirect draw args buffer for draw call
+	if (GPUResources->bSupportsIndirectDraw)
+	{
+		RHICmdList.Transition(FRHITransitionInfo(GPUResources->IndirectDrawArgsBuffer, ERHIAccess::UAVCompute, ERHIAccess::IndirectArgs));
+	}
+
+	// Return leaf cluster count as placeholder (actual count would require GPU readback)
+	// In a real implementation, you'd use the VisibleClusterBuffer in subsequent passes
+	return GPUResources->LeafClusterCount;
 }

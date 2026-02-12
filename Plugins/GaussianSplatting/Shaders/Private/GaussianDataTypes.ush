@@ -37,6 +37,47 @@ struct FGaussianChunkInfo
 	uint SHMinMaxB;
 };
 
+// GPU cluster data for Nanite-style culling (must match C++ FGaussianGPUCluster)
+// Total: 80 bytes (16-byte aligned)
+struct FGaussianGPUCluster
+{
+	float3 BoundsMin;
+	uint SplatStartIndex;
+	float3 BoundsMax;
+	uint SplatCount;
+	float4 BoundingSphere; // xyz=center, w=radius
+	uint ParentIndex;
+	uint LODLevel;
+	float MaxError;
+	uint LODSplatStartIndex;
+	uint LODSplatCount;
+	uint Padding[3];
+};
+
+// GPU LOD splat data for simplified cluster representations (must match C++ FGaussianGPULODSplat)
+// Total: 48 bytes
+struct FGaussianGPULODSplat
+{
+	float3 Position;
+	float3 Scale;
+	float4 Rotation;  // Quaternion (x, y, z, w)
+	uint ColorOpacityPacked;  // RGBA8 packed
+	uint Padding;
+};
+
+// Helper to unpack LOD splat color and opacity
+float4 UnpackLODSplatColor(uint packed)
+{
+	float r = float(packed & 0xFF) / 255.0;
+	float g = float((packed >> 8) & 0xFF) / 255.0;
+	float b = float((packed >> 16) & 0xFF) / 255.0;
+	float a = float((packed >> 24) & 0xFF) / 255.0;
+	return float4(r, g, b, a);
+}
+
+// Invalid cluster ID marker
+#define INVALID_CLUSTER_ID 0xFFFFFFFF
+
 // Pack two half floats into a uint
 uint PackHalf2x16(float2 v)
 {
