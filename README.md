@@ -40,5 +40,7 @@ This project primarily aims to solve this issue though dynamic streaming methods
 - Assign the imported PLY uasset to the Gaussian Splat Actor
 <img width="927" height="475" alt="GaussianSplatActorAssign" src="https://github.com/user-attachments/assets/00083594-29b4-4706-90ce-af19e6ff6ba7" />
 
-
+## Debug Console Command
+- `gs.ShowClusterBounds 1`: enable Nanite cluster preview
+- `gs.UseLODRendering 1`: enable Nanite cluster render
 
