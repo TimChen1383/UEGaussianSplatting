@@ -25,8 +25,9 @@ This project primarily aims to solve this issue though dynamic streaming methods
 - [x] Render color and alpha blending
 - [x] Hook render result into Unreal Engine's render pipeline: before post process
 - [x] Speed up serialize and deserialize process: Bulk Data
-- [ ] Dynamic load and unload macro tiles
+- [x] Hierarchical Data Structure: Cluster + LOD
 - [ ] Dynamic switching micro LOD
+- [ ] Dynamic load and unload macro tiles
 - [ ] Anti Aliasing
 
 ## How To Use It
