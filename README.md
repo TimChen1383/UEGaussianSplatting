@@ -42,5 +42,7 @@ This project primarily aims to solve this issue though dynamic streaming methods
 
 ## Debug Console Command
 - `gs.ShowClusterBounds 1`: enable Nanite cluster preview
+- `gs.ShowClusterBounds 0`: disable Nanite cluster preview
 - `gs.UseLODRendering 1`: enable Nanite cluster render
+- `gs.UseLODRendering 0`: disable Nanite cluster render
 
