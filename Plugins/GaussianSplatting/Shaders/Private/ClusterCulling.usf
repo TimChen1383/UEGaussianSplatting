@@ -3,6 +3,7 @@
 // Purpose: Frustum culling and LOD selection at cluster level for Nanite-style optimization
 // Outputs list of visible clusters with LOD selection info
 
+#include "/Engine/Private/Common.ush"
 #include "/Plugin/GaussianSplatting/Private/GaussianDataTypes.ush"
 
 // Input: All clusters

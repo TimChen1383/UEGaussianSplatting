@@ -14,6 +14,9 @@
 #include "RenderCore.h"
 #include "CommonRenderResources.h"
 
+// Console variable for cluster debug visualization (declared in GaussianSplatting.cpp)
+extern TAutoConsoleVariable<int32> CVarShowClusterBounds;
+
 FGaussianSplatRenderer::FGaussianSplatRenderer()
 {
 }
@@ -421,6 +424,8 @@ void FGaussianSplatRenderer::DrawSplats(
 	VSParameters.ViewDataBuffer = GPUResources->ViewDataBufferSRV;
 	VSParameters.SortKeysBuffer = GPUResources->SortKeysBufferSRV;
 	VSParameters.SplatCount = SplatCount;
+	// Debug mode from console variable (Nanite-style cluster coloring)
+	VSParameters.DebugMode = static_cast<uint32>(FMath::Max(0, CVarShowClusterBounds.GetValueOnRenderThread()));
 
 	SetShaderParameters(RHICmdList, VertexShader, VertexShader.GetVertexShader(), VSParameters);
 

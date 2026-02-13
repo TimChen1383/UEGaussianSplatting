@@ -730,11 +730,14 @@ void FGaussianSplatSceneProxy::GetDynamicMeshElements(
 				RenderBounds(PDI, ViewFamily.EngineShowFlags, GetBounds(), true);
 			}
 
-			// Draw cluster debug visualization if enabled
-			if (ShowClusterBounds > 0)
-			{
-				DrawClusterDebug(PDI, View);
-			}
+			// Note: Cluster debug visualization is now handled in the shader (Nanite-style)
+			// The old DrawClusterDebug() drew wireframe spheres which caused severe performance issues
+			// Now gs.ShowClusterBounds colors the splats directly by cluster ID (essentially free)
+			// Old code kept for reference but disabled:
+			// if (ShowClusterBounds > 0)
+			// {
+			// 	DrawClusterDebug(PDI, View);
+			// }
 		}
 	}
 }

@@ -98,7 +98,7 @@ struct FGaussianSplatData
 /**
  * Per-frame view data computed by compute shader, used by vertex shader
  * This structure must match the HLSL definition in GaussianDataTypes.ush
- * Total: 32 bytes per splat
+ * Total: 40 bytes per splat (with ClusterID and padding for 16-byte alignment)
  */
 USTRUCT()
 struct FGaussianSplatViewData
@@ -119,6 +119,12 @@ struct FGaussianSplatViewData
 
 	/** 2D covariance principal axis 2 (screen space) */
 	FVector2f Axis2 = FVector2f::ZeroVector;
+
+	/** Cluster ID for debug visualization (Nanite-style) */
+	uint32 ClusterID = 0;
+
+	/** Padding for 16-byte alignment */
+	uint32 Padding = 0;
 };
 
 /**

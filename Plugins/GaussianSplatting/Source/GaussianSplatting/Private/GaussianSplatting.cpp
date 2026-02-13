@@ -21,14 +21,15 @@
 // Console Variables for Gaussian Splatting
 //----------------------------------------------------------------------
 
-/** Show cluster bounding spheres for debugging */
+/** Show cluster debug visualization (Nanite-style coloring) */
 TAutoConsoleVariable<int32> CVarShowClusterBounds(
 	TEXT("gs.ShowClusterBounds"),
 	0,
-	TEXT("Show Gaussian Splat cluster bounding spheres.\n")
+	TEXT("Debug visualization for Gaussian Splat clusters (Nanite-style).\n")
+	TEXT("Colors each splat based on its cluster ID for debugging.\n")
 	TEXT(" 0: Off (default)\n")
-	TEXT(" 1: Show leaf clusters only (green)\n")
-	TEXT(" 2: Show all clusters (colored by LOD level)"),
+	TEXT(" 1: Show cluster colors (each cluster gets a unique random color)\n")
+	TEXT(" 2: Reserved for LOD level coloring (future)"),
 	ECVF_RenderThreadSafe);
 
 /** Show cluster visibility statistics */

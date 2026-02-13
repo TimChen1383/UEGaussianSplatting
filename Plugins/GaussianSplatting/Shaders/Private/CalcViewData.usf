@@ -49,10 +49,11 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		return;
 	}
 
-	// Check cluster visibility if culling is enabled
+	// Get cluster index for this splat (used for debug visualization and culling)
+	uint clusterIndex = 0;
 	if (UseClusterCulling)
 	{
-		uint clusterIndex = SplatClusterIndexBuffer[splatIndex];
+		clusterIndex = SplatClusterIndexBuffer[splatIndex];
 		if (!IsClusterVisible(clusterIndex))
 		{
 			// Cluster is culled - mark splat as invalid
@@ -64,6 +65,8 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 			viewData.PackedColorBA = 0;
 			viewData.Axis1 = float2(0, 0);
 			viewData.Axis2 = float2(0, 0);
+			viewData.ClusterID = clusterIndex;
+			viewData.Padding = 0;
 			ViewDataBuffer[splatIndex] = viewData;
 			return;
 		}
@@ -113,6 +116,8 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		viewData.PackedColorBA = 0;
 		viewData.Axis1 = float2(0, 0);
 		viewData.Axis2 = float2(0, 0);
+		viewData.ClusterID = clusterIndex;
+		viewData.Padding = 0;
 		ViewDataBuffer[splatIndex] = viewData;
 		return;
 	}
@@ -184,6 +189,8 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 			viewData.PackedColorBA = 0;
 			viewData.Axis1 = float2(0, 0);
 			viewData.Axis2 = float2(0, 0);
+			viewData.ClusterID = clusterIndex;
+			viewData.Padding = 0;
 			ViewDataBuffer[splatIndex] = viewData;
 			return;
 		}
@@ -238,6 +245,8 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	viewData.PackedColorBA = PackHalf2x16(float2(finalColor.b, opacity));
 	viewData.Axis1 = axis1;
 	viewData.Axis2 = axis2;
+	viewData.ClusterID = clusterIndex;
+	viewData.Padding = 0;
 
 	ViewDataBuffer[splatIndex] = viewData;
 }

@@ -134,6 +134,7 @@ class FGaussianSplatVS : public FGlobalShader
 		SHADER_PARAMETER_SRV(StructuredBuffer<FGaussianSplatViewData>, ViewDataBuffer)
 		SHADER_PARAMETER_SRV(StructuredBuffer<uint>, SortKeysBuffer)
 		SHADER_PARAMETER(uint32, SplatCount)
+		SHADER_PARAMETER(uint32, DebugMode)  // 0=off, 1=cluster colors, 2=LOD colors
 	END_SHADER_PARAMETER_STRUCT()
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)

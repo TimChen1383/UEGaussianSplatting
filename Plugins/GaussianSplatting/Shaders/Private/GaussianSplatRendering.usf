@@ -10,7 +10,35 @@
 StructuredBuffer<FGaussianSplatViewData> ViewDataBuffer;
 StructuredBuffer<uint> SortKeysBuffer;
 uint SplatCount;
+uint DebugMode;  // 0=off, 1=cluster colors, 2=LOD colors (future)
 #endif
+
+// Hash function to generate pseudo-random color from cluster ID
+// Uses the same approach as Nanite debug visualization
+float3 HashToColor(uint id)
+{
+	// Multiply by large prime for better distribution
+	uint h = id * 2654435761u;
+
+	// Extract RGB from different bit ranges
+	float r = float((h >> 0) & 255) / 255.0;
+	float g = float((h >> 8) & 255) / 255.0;
+	float b = float((h >> 16) & 255) / 255.0;
+
+	// Boost saturation for better visibility
+	float3 color = float3(r, g, b);
+	float maxVal = max(max(color.r, color.g), color.b);
+	if (maxVal > 0.0)
+	{
+		color = color / maxVal * 0.8 + 0.2;  // Normalize and add minimum brightness
+	}
+	else
+	{
+		color = float3(0.5, 0.5, 0.5);
+	}
+
+	return color;
+}
 
 // Vertex shader output / Pixel shader input
 struct FVertexOutput
@@ -56,7 +84,17 @@ FVertexOutput MainVS(
 	// Unpack color
 	float2 rg = UnpackHalf2x16(viewData.PackedColorRG);
 	float2 ba = UnpackHalf2x16(viewData.PackedColorBA);
-	Output.Color = float4(rg.x, rg.y, ba.x, ba.y);
+	float4 color = float4(rg.x, rg.y, ba.x, ba.y);
+
+	// Debug mode: override color with cluster-based coloring (Nanite-style)
+	if (DebugMode > 0)
+	{
+		color.rgb = HashToColor(viewData.ClusterID);
+		// Keep alpha at a reasonable value for visibility
+		color.a = max(color.a, 0.8);
+	}
+
+	Output.Color = color;
 
 	// Final clip position
 	Output.Position = float4(
