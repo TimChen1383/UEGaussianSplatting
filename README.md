@@ -13,7 +13,7 @@ This project primarily aims to solve this issue though dynamic streaming methods
 
 ![Temp](https://github.com/user-attachments/assets/71afa392-4e3d-49e1-ae3b-5cebe31621a8)
 
-- Nanite-like gaussin splating performance optimization solution
+- Nanite-like gaussin splatting performance optimization solution
 
 ![NaniteGS](https://github.com/user-attachments/assets/09e3d2c0-0bf2-4596-95df-a7b91d9dc321)
 
