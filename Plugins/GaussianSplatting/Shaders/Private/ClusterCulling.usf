@@ -23,6 +23,10 @@ RWStructuredBuffer<uint> IndirectDrawArgsBuffer;
 RWStructuredBuffer<uint> ClusterVisibilityBitmap;
 uint ClusterVisibilityBitmapSize;  // Number of uint32s in bitmap
 
+// Selected cluster buffer for Nanite-style debug visualization
+// Maps each leaf cluster to its selected cluster ID (may be parent if LOD is used)
+RWStructuredBuffer<uint> SelectedClusterBuffer;
+
 // Uniforms
 float4x4 LocalToWorld;
 float4x4 WorldToClip;
@@ -163,35 +167,46 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		return;
 	}
 
-	// LOD Selection: Check if parent cluster's LOD is acceptable
-	// If parent's projected error is below threshold, we could use parent's LOD splats
-	// For now, we always output leaf clusters but mark whether LOD could be used
+	// LOD Selection: Walk up the parent chain to find the coarsest cluster
+	// whose projected error is still below the threshold
+	// This determines which cluster should be used for debug visualization
 	bool useLOD = false;
+	uint selectedClusterID = clusterIndex;  // Default to leaf cluster
 
-	// Check if this cluster has a valid parent with LOD data
-	if (cluster.ParentIndex != INVALID_CLUSTER_ID && cluster.ParentIndex < ClusterCount)
+	// Calculate distance from camera to cluster center
+	float distanceToCamera = length(worldCenter.xyz - CameraPosition);
+
+	// Walk up parent chain to find selected cluster for LOD/visualization
+	uint currentClusterIdx = clusterIndex;
+	while (true)
 	{
-		FGaussianGPUCluster parentCluster = ClusterBuffer[cluster.ParentIndex];
+		FGaussianGPUCluster currentCluster = ClusterBuffer[currentClusterIdx];
 
-		// Only consider LOD if parent has LOD splats
-		if (parentCluster.LODSplatCount > 0)
+		// Check if this cluster has a valid parent
+		if (currentCluster.ParentIndex == INVALID_CLUSTER_ID || currentCluster.ParentIndex >= ClusterCount)
 		{
-			// Calculate distance from camera to cluster center
-			float distanceToCamera = length(worldCenter.xyz - CameraPosition);
+			break;  // Reached root or invalid parent
+		}
 
-			// Calculate projected error for parent cluster
-			float projectedError = CalculateProjectedError(parentCluster.MaxError * maxScale, distanceToCamera);
+		FGaussianGPUCluster parentCluster = ClusterBuffer[currentCluster.ParentIndex];
 
-			// Apply LOD bias (positive = prefer coarser LOD)
-			projectedError = projectedError * exp(-LODBias * 0.1);
+		// Calculate projected error for parent cluster
+		float projectedError = CalculateProjectedError(parentCluster.MaxError * maxScale, distanceToCamera);
 
-			// If parent's error is acceptable, we could use LOD representation
-			// For Phase 3 initial implementation, we just flag this but still render original splats
-			// Full LOD rendering integration will come in Phase 3.4
-			if (projectedError < ErrorThreshold)
-			{
-				useLOD = true;
-			}
+		// Apply LOD bias (positive = prefer coarser LOD)
+		projectedError = projectedError * exp(-LODBias * 0.1);
+
+		// If parent's error is acceptable, use the parent as selected cluster
+		if (projectedError < ErrorThreshold)
+		{
+			selectedClusterID = currentCluster.ParentIndex;
+			useLOD = true;
+			currentClusterIdx = currentCluster.ParentIndex;
+			// Continue walking up to find the coarsest acceptable cluster
+		}
+		else
+		{
+			break;  // Parent's error is too large, stop here
 		}
 	}
 
@@ -210,10 +225,14 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	uint bitmapIndex = clusterIndex / 32;
 	uint bitMask = 1u << (clusterIndex % 32);
 	InterlockedOr(ClusterVisibilityBitmap[bitmapIndex], bitMask);
+
+	// Write selected cluster ID for Nanite-style debug visualization
+	// This maps the leaf cluster to its selected cluster (may be a parent if LOD is used)
+	SelectedClusterBuffer[clusterIndex] = selectedClusterID;
 }
 
 // Reset counter shader (run before culling)
-// Also initializes indirect draw args and clears visibility bitmap
+// Also initializes indirect draw args, clears visibility bitmap, and initializes selected cluster buffer
 [numthreads(64, 1, 1)]
 void ResetCounterCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 {
@@ -241,5 +260,11 @@ void ResetCounterCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	if (threadIndex < ClusterVisibilityBitmapSize)
 	{
 		ClusterVisibilityBitmap[threadIndex] = 0;
+	}
+
+	// Initialize selected cluster buffer (each leaf cluster defaults to itself)
+	if (threadIndex < LeafClusterCount)
+	{
+		SelectedClusterBuffer[threadIndex] = threadIndex;
 	}
 }

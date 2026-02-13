@@ -181,6 +181,15 @@ public:
 	FUnorderedAccessViewRHIRef ClusterVisibilityBitmapUAV;
 	FShaderResourceViewRHIRef ClusterVisibilityBitmapSRV;
 
+	/** Selected cluster ID buffer for Nanite-style debug visualization
+	 * Maps each leaf cluster to its selected cluster ID (may be parent if LOD is used)
+	 * Written by cluster culling, read by CalcViewData
+	 * Size: LeafClusterCount uint32s
+	 */
+	FBufferRHIRef SelectedClusterBuffer;
+	FUnorderedAccessViewRHIRef SelectedClusterBufferUAV;
+	FShaderResourceViewRHIRef SelectedClusterBufferSRV;
+
 	/** Get position format as uint for shader */
 	uint32 GetPositionFormatUint() const { return static_cast<uint32>(PositionFormat); }
 

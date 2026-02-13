@@ -30,6 +30,7 @@ class FGaussianSplatCalcViewDataCS : public FGlobalShader
 		// Cluster visibility integration
 		SHADER_PARAMETER_SRV(StructuredBuffer<uint>, SplatClusterIndexBuffer)
 		SHADER_PARAMETER_SRV(StructuredBuffer<uint>, ClusterVisibilityBitmap)
+		SHADER_PARAMETER_SRV(StructuredBuffer<uint>, SelectedClusterBuffer)
 		SHADER_PARAMETER(uint32, UseClusterCulling)
 		// Transform matrices
 		SHADER_PARAMETER(FMatrix44f, LocalToWorld)
@@ -287,7 +288,9 @@ class FClusterCullingResetCS : public FGlobalShader
 		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, VisibleClusterCountBuffer)
 		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, IndirectDrawArgsBuffer)
 		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, ClusterVisibilityBitmap)
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, SelectedClusterBuffer)
 		SHADER_PARAMETER(uint32, ClusterVisibilityBitmapSize)
+		SHADER_PARAMETER(uint32, LeafClusterCount)
 	END_SHADER_PARAMETER_STRUCT()
 
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters)
@@ -313,6 +316,7 @@ class FClusterCullingCS : public FGlobalShader
 		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, VisibleClusterCountBuffer)
 		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, IndirectDrawArgsBuffer)
 		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, ClusterVisibilityBitmap)
+		SHADER_PARAMETER_UAV(RWStructuredBuffer<uint>, SelectedClusterBuffer)
 		SHADER_PARAMETER(FMatrix44f, LocalToWorld)
 		SHADER_PARAMETER(FMatrix44f, WorldToClip)
 		SHADER_PARAMETER(uint32, ClusterCount)

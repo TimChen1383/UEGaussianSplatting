@@ -173,6 +173,9 @@ void FGaussianSplatGPUResources::ReleaseRHI()
 	ClusterVisibilityBitmap.SafeRelease();
 	ClusterVisibilityBitmapUAV.SafeRelease();
 	ClusterVisibilityBitmapSRV.SafeRelease();
+	SelectedClusterBuffer.SafeRelease();
+	SelectedClusterBufferUAV.SafeRelease();
+	SelectedClusterBufferSRV.SafeRelease();
 
 	bInitialized = false;
 }
@@ -642,6 +645,32 @@ void FGaussianSplatGPUResources::CreateClusterBuffers(FRHICommandListBase& RHICm
 				.SetStride(sizeof(uint32)));
 
 		UE_LOG(LogTemp, Log, TEXT("GaussianSplatGPUResources: Created cluster visibility bitmap (%d bytes for %d clusters)"), BitmapSize, ClusterCount);
+	}
+
+	// Create selected cluster buffer for Nanite-style debug visualization
+	// One entry per leaf cluster, stores which cluster ID is selected based on LOD
+	{
+		uint32 BufferSize = LeafClusterCount * sizeof(uint32);
+		BufferSize = FMath::Max(BufferSize, (uint32)sizeof(uint32));  // At least one uint32
+
+		FRHIBufferCreateDesc Desc = FRHIBufferCreateDesc::Create(
+			TEXT("GaussianSelectedClusterBuffer"),
+			BufferSize,
+			sizeof(uint32),
+			BUF_UnorderedAccess | BUF_ShaderResource | BUF_StructuredBuffer)
+			.SetInitialState(ERHIAccess::UAVCompute);
+		SelectedClusterBuffer = RHICmdList.CreateBuffer(Desc);
+
+		SelectedClusterBufferUAV = RHICmdList.CreateUnorderedAccessView(
+			SelectedClusterBuffer, FRHIViewDesc::CreateBufferUAV()
+				.SetType(FRHIViewDesc::EBufferType::Structured)
+				.SetStride(sizeof(uint32)));
+		SelectedClusterBufferSRV = RHICmdList.CreateShaderResourceView(
+			SelectedClusterBuffer, FRHIViewDesc::CreateBufferSRV()
+				.SetType(FRHIViewDesc::EBufferType::Structured)
+				.SetStride(sizeof(uint32)));
+
+		UE_LOG(LogTemp, Log, TEXT("GaussianSplatGPUResources: Created selected cluster buffer (%d bytes for %d leaf clusters)"), BufferSize, LeafClusterCount);
 	}
 
 	UE_LOG(LogTemp, Log, TEXT("GaussianSplatGPUResources: Created cluster buffers for %d clusters"), ClusterCount);

@@ -16,6 +16,7 @@ RWStructuredBuffer<FGaussianSplatViewData> ViewDataBuffer;
 // Cluster visibility integration
 StructuredBuffer<uint> SplatClusterIndexBuffer;
 StructuredBuffer<uint> ClusterVisibilityBitmap;
+StructuredBuffer<uint> SelectedClusterBuffer;  // Maps leaf cluster -> selected cluster for debug viz
 uint UseClusterCulling;  // 1 = check visibility, 0 = process all splats
 
 float4x4 LocalToWorld;
@@ -50,11 +51,16 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	}
 
 	// Get cluster index for this splat (used for debug visualization and culling)
-	uint clusterIndex = 0;
+	uint leafClusterIndex = 0;
+	uint selectedClusterID = 0;  // The cluster selected for visualization (may be parent if LOD is used)
 	if (UseClusterCulling)
 	{
-		clusterIndex = SplatClusterIndexBuffer[splatIndex];
-		if (!IsClusterVisible(clusterIndex))
+		leafClusterIndex = SplatClusterIndexBuffer[splatIndex];
+		// Get the selected cluster ID from the LOD selection (Nanite-style)
+		// This maps from leaf cluster to the actually selected cluster based on screen-space error
+		selectedClusterID = SelectedClusterBuffer[leafClusterIndex];
+
+		if (!IsClusterVisible(leafClusterIndex))
 		{
 			// Cluster is culled - mark splat as invalid
 			// Use ClipPosition.w = -1 as invalid marker
@@ -65,7 +71,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 			viewData.PackedColorBA = 0;
 			viewData.Axis1 = float2(0, 0);
 			viewData.Axis2 = float2(0, 0);
-			viewData.ClusterID = clusterIndex;
+			viewData.ClusterID = selectedClusterID;
 			viewData.Padding = 0;
 			ViewDataBuffer[splatIndex] = viewData;
 			return;
@@ -116,7 +122,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		viewData.PackedColorBA = 0;
 		viewData.Axis1 = float2(0, 0);
 		viewData.Axis2 = float2(0, 0);
-		viewData.ClusterID = clusterIndex;
+		viewData.ClusterID = selectedClusterID;
 		viewData.Padding = 0;
 		ViewDataBuffer[splatIndex] = viewData;
 		return;
@@ -189,7 +195,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 			viewData.PackedColorBA = 0;
 			viewData.Axis1 = float2(0, 0);
 			viewData.Axis2 = float2(0, 0);
-			viewData.ClusterID = clusterIndex;
+			viewData.ClusterID = selectedClusterID;
 			viewData.Padding = 0;
 			ViewDataBuffer[splatIndex] = viewData;
 			return;
@@ -245,7 +251,7 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	viewData.PackedColorBA = PackHalf2x16(float2(finalColor.b, opacity));
 	viewData.Axis1 = axis1;
 	viewData.Axis2 = axis2;
-	viewData.ClusterID = clusterIndex;
+	viewData.ClusterID = selectedClusterID;
 	viewData.Padding = 0;
 
 	ViewDataBuffer[splatIndex] = viewData;
