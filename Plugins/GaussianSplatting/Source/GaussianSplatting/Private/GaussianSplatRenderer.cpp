@@ -688,7 +688,7 @@ int32 FGaussianSplatRenderer::DispatchClusterCulling(
 		CullingParams.CameraPosition = FVector3f(View.ViewMatrices.GetViewOrigin());
 		FIntRect ViewRect = View.UnscaledViewRect;
 		CullingParams.ScreenHeight = static_cast<float>(ViewRect.Height());
-		CullingParams.ErrorThreshold = 1.0f;  // 1 pixel error threshold (can be made configurable)
+		CullingParams.ErrorThreshold = 100.0f;  // Test: increased from 1.0f to debug LOD visualization
 		CullingParams.LODBias = 0.0f;         // No bias (can be made configurable)
 
 		const uint32 ThreadGroupSize = 64;

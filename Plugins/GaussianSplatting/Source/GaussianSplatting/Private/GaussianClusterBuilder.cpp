@@ -63,6 +63,21 @@ bool FGaussianClusterBuilder::BuildClusterHierarchy(
 
 		UE_LOG(LogTemp, Log, TEXT("  LOD Level %d: %d clusters"), CurrentLODLevel, ParentLevel.Num());
 
+		// Update child clusters in AllClusters with their new ParentClusterID
+		// (BuildParentLevel updated CurrentLevel, but AllClusters has old copies)
+		for (const FGaussianCluster& UpdatedChild : CurrentLevel)
+		{
+			// Find and update the corresponding cluster in AllClusters
+			for (FGaussianCluster& StoredCluster : AllClusters)
+			{
+				if (StoredCluster.ClusterID == UpdatedChild.ClusterID)
+				{
+					StoredCluster.ParentClusterID = UpdatedChild.ParentClusterID;
+					break;
+				}
+			}
+		}
+
 		// Add parent clusters to all clusters
 		AllClusters.Append(ParentLevel);
 
