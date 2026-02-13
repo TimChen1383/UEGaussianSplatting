@@ -37,6 +37,7 @@ public:
 
 	/**
 	 * Dispatch the view data calculation compute shader
+	 * @param bUseLODRendering If true, skip splats covered by parent LOD clusters
 	 */
 	static void DispatchCalcViewData(
 		FRHICommandListImmediate& RHICmdList,
@@ -47,7 +48,8 @@ public:
 		int32 SHOrder,
 		float OpacityScale,
 		float SplatScale,
-		bool bHasColorTexture = true
+		bool bHasColorTexture = true,
+		bool bUseLODRendering = false
 	);
 
 	/**
@@ -81,13 +83,15 @@ public:
 	/**
 	 * Dispatch cluster culling compute shader (Nanite-style optimization)
 	 * Tests cluster bounding spheres against view frustum
+	 * @param bUseLODRendering If true, track unique LOD clusters for later rendering
 	 * @return Number of visible clusters (for statistics)
 	 */
 	static int32 DispatchClusterCulling(
 		FRHICommandListImmediate& RHICmdList,
 		const FSceneView& View,
 		FGaussianSplatGPUResources* GPUResources,
-		const FMatrix& LocalToWorld
+		const FMatrix& LocalToWorld,
+		bool bUseLODRendering = false
 	);
 
 	/**
@@ -108,6 +112,41 @@ public:
 		uint32 OutputStartIndex,
 		float OpacityScale,
 		float SplatScale
+	);
+
+	/**
+	 * Dispatch LOD splat rendering for all selected LOD clusters
+	 * Reads the LOD cluster list from the GPU, processes each cluster's LOD splats
+	 * DEPRECATED: Use DispatchCalcLODViewDataGPUDriven instead
+	 */
+	static void DispatchLODSplatRendering(
+		FRHICommandListImmediate& RHICmdList,
+		const FSceneView& View,
+		FGaussianSplatGPUResources* GPUResources,
+		const FMatrix& LocalToWorld,
+		float OpacityScale,
+		float SplatScale
+	);
+
+	/**
+	 * Dispatch GPU-driven LOD view data calculation
+	 * Processes ALL LOD splats on GPU, rejects non-selected ones - no CPU readback needed
+	 */
+	static void DispatchCalcLODViewDataGPUDriven(
+		FRHICommandListImmediate& RHICmdList,
+		const FSceneView& View,
+		FGaussianSplatGPUResources* GPUResources,
+		const FMatrix& LocalToWorld,
+		float OpacityScale,
+		float SplatScale
+	);
+
+	/**
+	 * Dispatch shader to update indirect draw args with LOD splat count
+	 */
+	static void DispatchUpdateDrawArgs(
+		FRHICommandListImmediate& RHICmdList,
+		FGaussianSplatGPUResources* GPUResources
 	);
 
 private:

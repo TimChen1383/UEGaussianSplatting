@@ -41,6 +41,16 @@ TAutoConsoleVariable<int32> CVarShowClusterStats(
 	TEXT(" 1: On"),
 	ECVF_RenderThreadSafe);
 
+/** Enable LOD rendering for Gaussian Splats */
+TAutoConsoleVariable<int32> CVarUseLODRendering(
+	TEXT("gs.UseLODRendering"),
+	0,
+	TEXT("[WIP - Not yet functional] Enable LOD rendering for Gaussian Splats.\n")
+	TEXT("When enabled, distant clusters render simplified LOD splats instead of all original splats.\n")
+	TEXT(" 0: Off - always render original splats (default)\n")
+	TEXT(" 1: On - use LOD splats for distant clusters (requires GPU-driven implementation)"),
+	ECVF_RenderThreadSafe);
+
 // Export for other modules
 int32 GGaussianSplatShowClusterBounds = 0;
 int32 GGaussianSplatShowClusterStats = 0;

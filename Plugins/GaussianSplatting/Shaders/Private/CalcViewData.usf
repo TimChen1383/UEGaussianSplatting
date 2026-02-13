@@ -18,6 +18,7 @@ StructuredBuffer<uint> SplatClusterIndexBuffer;
 StructuredBuffer<uint> ClusterVisibilityBitmap;
 StructuredBuffer<uint> SelectedClusterBuffer;  // Maps leaf cluster -> selected cluster for debug viz
 uint UseClusterCulling;  // 1 = check visibility, 0 = process all splats
+uint UseLODRendering;    // 1 = skip splats covered by parent LOD, 0 = render all visible splats
 
 float4x4 LocalToWorld;
 float4x4 WorldToClip;
@@ -67,6 +68,23 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 			// Depth will be set to MAX in CalcDistances to sort to end
 			FGaussianSplatViewData viewData;
 			viewData.ClipPosition = float4(0, 0, 0, -1);
+			viewData.PackedColorRG = 0;
+			viewData.PackedColorBA = 0;
+			viewData.Axis1 = float2(0, 0);
+			viewData.Axis2 = float2(0, 0);
+			viewData.ClusterID = selectedClusterID;
+			viewData.Padding = 0;
+			ViewDataBuffer[splatIndex] = viewData;
+			return;
+		}
+
+		// LOD Rendering: Skip original splats when covered by a parent's LOD representation
+		// If selectedClusterID != leafClusterIndex, this leaf's splats are replaced by parent LOD splats
+		if (UseLODRendering && selectedClusterID != leafClusterIndex)
+		{
+			// This splat is covered by a parent LOD - skip it
+			FGaussianSplatViewData viewData;
+			viewData.ClipPosition = float4(0, 0, 0, -1); // Invalid marker
 			viewData.PackedColorRG = 0;
 			viewData.PackedColorBA = 0;
 			viewData.Axis1 = float2(0, 0);

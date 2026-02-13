@@ -143,7 +143,7 @@ UGaussianSplatAsset* UGaussianSplatAssetFactory::ImportPLYFile(
 
 	FGaussianClusterHierarchy ClusterHierarchy;
 	FGaussianClusterBuilder::FBuildSettings BuildSettings;
-	BuildSettings.SplatsPerCluster = 128;
+	BuildSettings.SplatsPerCluster = 128;  // Smaller clusters for finer-grained LOD
 	BuildSettings.MaxChildrenPerCluster = 8;
 	BuildSettings.bReorderSplats = true; // Reorder for better cache locality
 

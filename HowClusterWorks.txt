@@ -1,0 +1,256 @@
+# Nanite-Style LOD System - Educational Guide
+
+This document explains how the cluster-based LOD system works in the Gaussian Splatting plugin.
+
+---
+
+## 1. How Points Become Clusters
+
+**File:** `GaussianClusterBuilder.cpp` (lines 5-115)
+
+### Step 1: Sort by Morton Code (Spatial Locality)
+```
+Raw splats: [A, B, C, D, E, F, G, H, ...]  (random order)
+     ↓
+Morton sort: Groups nearby 3D points together
+     ↓
+Sorted: [A, C, F, B, E, H, D, G, ...]  (spatially coherent)
+```
+
+**Morton Code** (Z-order curve) interleaves X, Y, Z bits to create a 1D value that preserves 3D locality. Points close in 3D space get similar Morton codes.
+
+**Code:** `SortSplatsByMortonCode()` at line 135
+
+### Step 2: Create Leaf Clusters
+```
+Sorted splats: [0..127] [128..255] [256..383] ...
+                  ↓         ↓          ↓
+               Cluster0  Cluster1  Cluster2  (128 splats each)
+```
+
+Each cluster stores:
+- `SplatStartIndex`, `SplatCount` - which splats belong to it
+- `BoundingSphere` - spatial extent
+- `MaxError = 0` - leaf clusters have no simplification error
+
+**Code:** `CreateLeafClusters()` at line 188
+
+---
+
+## 2. The Tree Structure (Hierarchy)
+
+**File:** `GaussianClusterBuilder.cpp` (lines 51-86, 215-271)
+
+### Bottom-Up Construction
+```
+LOD Level 0 (Leaves):   [C0] [C1] [C2] [C3] [C4] [C5] [C6] [C7]
+                           \   /     \   /     \   /     \   /
+LOD Level 1:              [P0]      [P1]      [P2]      [P3]
+                             \       /           \       /
+LOD Level 2:                  [G0]                [G1]
+                                  \              /
+LOD Level 3 (Root):                  [ROOT]
+```
+
+**Settings:**
+- `SplatsPerCluster = 128` (leaf size)
+- `MaxChildrenPerCluster = 8` (branching factor)
+
+**How it works:**
+1. Start with N leaf clusters
+2. Group every 8 clusters into 1 parent → N/8 parents
+3. Repeat until 1 root remains
+
+**Code:** `BuildParentLevel()` at line 215
+
+### Parent-Child Relationships
+```cpp
+// Each cluster stores:
+uint32 ParentClusterID;      // Points UP to parent (or 0xFFFFFFFF for root)
+TArray<uint32> ChildClusterIDs;  // Points DOWN to children (empty for leaves)
+```
+
+---
+
+## 3. Error Calculation (MaxError)
+
+**File:** `GaussianClusterBuilder.cpp` (lines 311-346)
+
+### What is MaxError?
+`MaxError` = maximum world-space error if we render THIS cluster's simplified representation instead of its children.
+
+```
+         [Parent]
+        /        \
+   [Child A]  [Child B]
+
+MaxError = max distance from Parent's center to any Child's furthest point
+```
+
+### The Formula
+```cpp
+for each child:
+    CenterDistance = distance(Parent.center, Child.center)
+    TotalDistance = CenterDistance + Child.radius + Child.MaxError
+    MaxError = max(MaxError, TotalDistance)
+
+// Subtract parent's own radius (error is relative to parent's representation)
+Parent.MaxError = MaxError - Parent.radius
+```
+
+**Important:** Error propagates UP. Parent's error includes children's errors.
+
+---
+
+## 4. Screen Space Error & LOD Selection
+
+**File:** `ClusterCulling.usf` (lines 66-78, 170-211)
+
+### The Core Formula
+```cpp
+projectedError = (worldSpaceError / distanceToCamera) * ScreenHeight * 0.5
+```
+
+**Intuition:**
+- Same object looks SMALLER when far away
+- `worldSpaceError / distance` = angular size
+- Multiply by screen height to get pixels
+- `/2` approximates ~90 FOV
+
+### Example
+```
+MaxError = 10 units (world space)
+Distance = 100 units
+ScreenHeight = 1080 pixels
+
+projectedError = (10 / 100) * 1080 * 0.5 = 54 pixels
+
+If ErrorThreshold = 1 pixel:
+  54 > 1 → Use finer LOD (children)
+
+If ErrorThreshold = 100 pixels:
+  54 < 100 → Use coarser LOD (parent)
+```
+
+---
+
+## 5. Camera Interaction with the Tree
+
+**File:** `ClusterCulling.usf` (lines 131-231)
+
+### The Algorithm (per leaf cluster)
+```
+for each LEAF cluster:
+    1. Frustum cull - skip if outside view
+
+    2. Calculate distance to camera
+
+    3. Walk UP the tree:
+       current = leaf
+       while current.parent exists:
+           parent = current.parent
+           projectedError = CalculateProjectedError(parent.MaxError, distance)
+
+           if projectedError < ErrorThreshold:
+               selectedCluster = parent   // Use coarser LOD
+               current = parent           // Keep walking up
+           else:
+               break  // Parent too coarse, stop here
+
+    4. Write selectedCluster to SelectedClusterBuffer
+```
+
+### Visual Example
+```
+Camera FAR (distance = 1000):
+    projectedError is SMALL → can use coarser parent
+
+         [ROOT] ← Selected (few colors)
+        /      \
+      [P0]    [P1]
+     / | \   / | \
+    ...leaves...
+
+Camera CLOSE (distance = 10):
+    projectedError is LARGE → must use fine leaves
+
+          [ROOT]
+         /      \
+       [P0]    [P1]
+      / | \   / | \
+    [L0][L1]...[Ln] ← Selected (many colors)
+```
+
+---
+
+## 6. Debug Visualization
+
+**Files:**
+- `GaussianSplatRenderer.cpp` (~line 691) - sets parameters
+- `ClusterCulling.usf` (line 231) - writes SelectedClusterBuffer
+- `GaussianPS.usf` - reads SelectedCluster, generates color from hash
+
+### Color Generation
+```cpp
+// Each cluster gets a unique color from its ID
+uint selectedCluster = SelectedClusterBuffer[leafClusterIndex];
+float3 color = HashToColor(selectedCluster);  // Deterministic pseudo-random
+```
+
+**Expected behavior:**
+- Camera FAR → Many leaves share same selectedCluster (parent) → Same color
+- Camera CLOSE → Each leaf has itself as selectedCluster → Many colors
+
+---
+
+## 7. File Locations Summary
+
+| Component | File | Key Lines |
+|-----------|------|-----------|
+| Morton sort | `GaussianClusterBuilder.cpp` | 135-186 |
+| Leaf clusters | `GaussianClusterBuilder.cpp` | 188-213 |
+| Tree building | `GaussianClusterBuilder.cpp` | 51-86, 215-271 |
+| Error calculation | `GaussianClusterBuilder.cpp` | 311-346 |
+| LOD selection (GPU) | `ClusterCulling.usf` | 170-211 |
+| Screen-space error | `ClusterCulling.usf` | 66-78 |
+| Parameter passing | `GaussianSplatRenderer.cpp` | 687-692 |
+| Data types | `GaussianClusterTypes.h` | Full file |
+
+---
+
+## 8. The Bug We Found
+
+**Problem:** LOD never switches because `ParentIndex` was always `0xFFFFFFFF`.
+
+**Root Cause:** In `GaussianClusterBuilder.cpp`:
+```cpp
+// Line 49: Copies leaves to AllClusters (ParentClusterID = 0xFFFFFFFF)
+AllClusters.Append(CurrentLevel);
+
+// Line 57: BuildParentLevel sets ParentClusterID on CurrentLevel
+// But AllClusters still has old copies!
+```
+
+**Fix:** After `BuildParentLevel`, sync `ParentClusterID` back to `AllClusters`:
+```cpp
+for (const FGaussianCluster& UpdatedChild : CurrentLevel)
+{
+    for (FGaussianCluster& StoredCluster : AllClusters)
+    {
+        if (StoredCluster.ClusterID == UpdatedChild.ClusterID)
+        {
+            StoredCluster.ParentClusterID = UpdatedChild.ParentClusterID;
+            break;
+        }
+    }
+}
+```
+
+---
+
+## 9. Testing After Fix
+
+1. **Rebuild project** (full rebuild)
+2. **Re-import test asset** (old .uasset has broken hierarchy)
+3. **Enable debug:** `gs.ShowClusterBounds 1`
+4. **Move camera:** Colors should change with distance

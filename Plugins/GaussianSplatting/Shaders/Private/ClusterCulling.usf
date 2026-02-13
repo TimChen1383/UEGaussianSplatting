@@ -27,6 +27,20 @@ uint ClusterVisibilityBitmapSize;  // Number of uint32s in bitmap
 // Maps each leaf cluster to its selected cluster ID (may be parent if LOD is used)
 RWStructuredBuffer<uint> SelectedClusterBuffer;
 
+// LOD cluster tracking - for rendering parent LOD splats
+// Unique parent clusters that need their LOD splats rendered
+RWStructuredBuffer<uint> LODClusterBuffer;
+// Count of unique LOD clusters
+RWStructuredBuffer<uint> LODClusterCountBuffer;
+// Bitmap to track which parent clusters have been claimed (1 bit per cluster)
+RWStructuredBuffer<uint> LODClusterSelectedBitmap;
+// Total LOD splats to render (sum of all selected parent cluster LOD splat counts)
+RWStructuredBuffer<uint> LODSplatTotalBuffer;
+// Output count for GPU-driven LOD splat processing (reset before LOD processing)
+RWStructuredBuffer<uint> LODSplatOutputCountBuffer;
+// Whether LOD rendering is enabled
+uint UseLODRendering;
+
 // Uniforms
 float4x4 LocalToWorld;
 float4x4 WorldToClip;
@@ -229,6 +243,30 @@ void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	// Write selected cluster ID for Nanite-style debug visualization
 	// This maps the leaf cluster to its selected cluster (may be a parent if LOD is used)
 	SelectedClusterBuffer[clusterIndex] = selectedClusterID;
+
+	// LOD Rendering: Track unique parent clusters that need their LOD splats rendered
+	// Only when LOD rendering is enabled and a parent cluster was selected
+	if (UseLODRendering && selectedClusterID != clusterIndex)
+	{
+		// Atomically claim this parent cluster (only first thread wins)
+		// This ensures each parent cluster is only added once to LODClusterBuffer
+		uint bitmapIdx = selectedClusterID / 32;
+		uint bitMask = 1u << (selectedClusterID % 32);
+		uint original;
+		InterlockedOr(LODClusterSelectedBitmap[bitmapIdx], bitMask, original);
+
+		if ((original & bitMask) == 0)  // We claimed it (bit was 0 before)
+		{
+			// Add this parent cluster to the LOD cluster list
+			FGaussianGPUCluster parentCluster = ClusterBuffer[selectedClusterID];
+			uint lodIdx;
+			InterlockedAdd(LODClusterCountBuffer[0], 1, lodIdx);
+			LODClusterBuffer[lodIdx] = selectedClusterID;
+
+			// Add this cluster's LOD splat count to the total
+			InterlockedAdd(LODSplatTotalBuffer[0], parentCluster.LODSplatCount);
+		}
+	}
 }
 
 // Reset counter shader (run before culling)
@@ -254,12 +292,25 @@ void ResetCounterCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		IndirectDrawArgsBuffer[2] = 0;
 		IndirectDrawArgsBuffer[3] = 0;
 		IndirectDrawArgsBuffer[4] = 0;
+
+		// Reset LOD cluster tracking counters
+		LODClusterCountBuffer[0] = 0;
+		LODSplatTotalBuffer[0] = 0;
+
+		// Reset LOD splat output counter for GPU-driven LOD processing
+		LODSplatOutputCountBuffer[0] = 0;
 	}
 
 	// All threads help clear the visibility bitmap
 	if (threadIndex < ClusterVisibilityBitmapSize)
 	{
 		ClusterVisibilityBitmap[threadIndex] = 0;
+	}
+
+	// Clear LOD cluster selected bitmap (same size as cluster visibility bitmap)
+	if (threadIndex < ClusterVisibilityBitmapSize)
+	{
+		LODClusterSelectedBitmap[threadIndex] = 0;
 	}
 
 	// Initialize selected cluster buffer (each leaf cluster defaults to itself)

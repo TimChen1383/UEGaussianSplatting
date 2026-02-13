@@ -18,3 +18,7 @@ IMPLEMENT_GLOBAL_SHADER(FRadixSortScatterCS, "/Plugin/GaussianSplatting/Private/
 // Cluster culling shaders
 IMPLEMENT_GLOBAL_SHADER(FClusterCullingResetCS, "/Plugin/GaussianSplatting/Private/ClusterCulling.usf", "ResetCounterCS", SF_Compute);
 IMPLEMENT_GLOBAL_SHADER(FClusterCullingCS, "/Plugin/GaussianSplatting/Private/ClusterCulling.usf", "MainCS", SF_Compute);
+
+// GPU-driven LOD rendering shaders
+IMPLEMENT_GLOBAL_SHADER(FGaussianSplatCalcLODViewDataGPUDrivenCS, "/Plugin/GaussianSplatting/Private/CalcLODViewDataGPUDriven.usf", "MainCS", SF_Compute);
+IMPLEMENT_GLOBAL_SHADER(FUpdateDrawArgsCS, "/Plugin/GaussianSplatting/Private/UpdateDrawArgs.usf", "MainCS", SF_Compute);

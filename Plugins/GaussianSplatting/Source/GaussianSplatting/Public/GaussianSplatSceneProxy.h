@@ -190,6 +190,62 @@ public:
 	FUnorderedAccessViewRHIRef SelectedClusterBufferUAV;
 	FShaderResourceViewRHIRef SelectedClusterBufferSRV;
 
+	//----------------------------------------------------------------------
+	// LOD cluster selection output (for LOD rendering)
+	//----------------------------------------------------------------------
+
+	/** Buffer of unique parent cluster indices that need their LOD splats rendered
+	 * Written by cluster culling, read by LOD rendering pass
+	 * Size: ClusterCount uint32s (worst case all clusters could be selected)
+	 */
+	FBufferRHIRef LODClusterBuffer;
+	FUnorderedAccessViewRHIRef LODClusterBufferUAV;
+	FShaderResourceViewRHIRef LODClusterBufferSRV;
+
+	/** Count of unique LOD clusters (atomic counter)
+	 * Written by cluster culling, read back for LOD rendering dispatch
+	 */
+	FBufferRHIRef LODClusterCountBuffer;
+	FUnorderedAccessViewRHIRef LODClusterCountBufferUAV;
+	FShaderResourceViewRHIRef LODClusterCountBufferSRV;
+
+	/** Bitmap to track which parent clusters have been claimed (1 bit per cluster)
+	 * Used during cluster culling to ensure each parent is only added once
+	 * Also read by GPU-driven LOD shader to check if cluster is selected
+	 */
+	FBufferRHIRef LODClusterSelectedBitmap;
+	FUnorderedAccessViewRHIRef LODClusterSelectedBitmapUAV;
+	FShaderResourceViewRHIRef LODClusterSelectedBitmapSRV;
+
+	/** Total LOD splats to render (sum of all selected parent cluster LOD splat counts)
+	 * Written by cluster culling, used for indirect draw args
+	 */
+	FBufferRHIRef LODSplatTotalBuffer;
+	FUnorderedAccessViewRHIRef LODSplatTotalBufferUAV;
+	FShaderResourceViewRHIRef LODSplatTotalBufferSRV;
+
+	//----------------------------------------------------------------------
+	// GPU-driven LOD rendering resources
+	//----------------------------------------------------------------------
+
+	/** Maps each LOD splat index to its owning cluster ID
+	 * Used by GPU-driven LOD shader to check if LOD splat's cluster is selected
+	 * Size: TotalLODSplats * sizeof(uint32)
+	 */
+	FBufferRHIRef LODSplatClusterIndexBuffer;
+	FShaderResourceViewRHIRef LODSplatClusterIndexBufferSRV;
+
+	/** Atomic counter for valid LOD splat output
+	 * Written by CalcLODViewDataGPUDriven, read by UpdateDrawArgs
+	 * Size: 4 bytes
+	 */
+	FBufferRHIRef LODSplatOutputCountBuffer;
+	FUnorderedAccessViewRHIRef LODSplatOutputCountBufferUAV;
+	FShaderResourceViewRHIRef LODSplatOutputCountBufferSRV;
+
+	/** Total splat count for buffer allocation (SplatCount + TotalLODSplats) */
+	int32 TotalSplatCount = 0;
+
 	/** Get position format as uint for shader */
 	uint32 GetPositionFormatUint() const { return static_cast<uint32>(PositionFormat); }
 
@@ -224,6 +280,9 @@ private:
 
 	/** Cached splat-to-cluster index mapping */
 	TArray<uint32> CachedSplatClusterIndices;
+
+	/** Cached LOD splat-to-cluster index mapping (for GPU-driven LOD rendering) */
+	TArray<uint32> CachedLODSplatClusterIndices;
 
 	int32 SplatCount = 0;
 	bool bInitialized = false;

@@ -3,7 +3,9 @@
 #include "GaussianSplatRenderer.h"
 #include "GaussianSplatShaders.h"
 #include "GaussianSplatSceneProxy.h"
+#include "GaussianClusterTypes.h"
 #include "RHICommandList.h"
+#include "RHIGPUReadback.h"
 #include "RenderGraphBuilder.h"
 #include "RenderGraphUtils.h"
 #include "GlobalShader.h"
@@ -14,8 +16,9 @@
 #include "RenderCore.h"
 #include "CommonRenderResources.h"
 
-// Console variable for cluster debug visualization (declared in GaussianSplatting.cpp)
+// Console variables (declared in GaussianSplatting.cpp)
 extern TAutoConsoleVariable<int32> CVarShowClusterBounds;
+extern TAutoConsoleVariable<int32> CVarUseLODRendering;
 
 FGaussianSplatRenderer::FGaussianSplatRenderer()
 {
@@ -66,25 +69,40 @@ void FGaussianSplatRenderer::Render(
 		GPUResources->CachedSplatScale == SplatScale &&
 		GPUResources->CachedHasColorTexture == bHasColorTexture;
 
+	// Check if LOD rendering is enabled
+	// GPU-driven LOD rendering: no CPU readback, all processing done on GPU
+	bool bUseLODRendering = CVarUseLODRendering.GetValueOnRenderThread() != 0 && GPUResources->bHasLODSplats;
+
 	if (!bCanSkipCompute)
 	{
 		// Step 0: Cluster culling (Nanite-style optimization)
-		// Currently runs for statistics/validation; future: skip culled clusters in CalcViewData
+		// Also performs LOD selection and tracks unique LOD clusters
 		if (GPUResources->bHasClusterData)
 		{
-			int32 VisibleClusters = DispatchClusterCulling(RHICmdList, View, GPUResources, LocalToWorld);
+			int32 VisibleClusters = DispatchClusterCulling(RHICmdList, View, GPUResources, LocalToWorld, bUseLODRendering);
 			// Uncomment for debug logging:
 			// UE_LOG(LogTemp, Log, TEXT("Cluster culling: %d / %d clusters visible"), VisibleClusters, GPUResources->LeafClusterCount);
 		}
 
 		// Step 1: Calculate view data for each splat
-		DispatchCalcViewData(RHICmdList, View, GPUResources, LocalToWorld, SplatCount, SHOrder, OpacityScale, SplatScale, bHasColorTexture);
+		// When LOD rendering is enabled, splats covered by parent LOD clusters are skipped
+		DispatchCalcViewData(RHICmdList, View, GPUResources, LocalToWorld, SplatCount, SHOrder, OpacityScale, SplatScale, bHasColorTexture, bUseLODRendering);
+
+		// Step 1.5: GPU-driven LOD rendering - process ALL LOD splats on GPU
+		// Non-selected clusters' splats are rejected in the shader (no CPU readback)
+		if (bUseLODRendering)
+		{
+			DispatchCalcLODViewDataGPUDriven(RHICmdList, View, GPUResources, LocalToWorld, OpacityScale, SplatScale);
+			DispatchUpdateDrawArgs(RHICmdList, GPUResources);
+		}
 
 		// Step 2: Calculate sort distances
-		DispatchCalcDistances(RHICmdList, GPUResources, SplatCount);
+		// Use TotalSplatCount when LOD rendering is enabled to process LOD splats too
+		int32 SortCount = bUseLODRendering ? GPUResources->TotalSplatCount : SplatCount;
+		DispatchCalcDistances(RHICmdList, GPUResources, SortCount);
 
 		// Step 3: Sort splats back-to-front
-		DispatchRadixSort(RHICmdList, GPUResources, SplatCount);
+		DispatchRadixSort(RHICmdList, GPUResources, SortCount);
 
 		// Update cache
 		GPUResources->CachedViewProjectionMatrix = CurrentVP;
@@ -108,7 +126,8 @@ void FGaussianSplatRenderer::DispatchCalcViewData(
 	int32 SHOrder,
 	float OpacityScale,
 	float SplatScale,
-	bool bHasColorTexture)
+	bool bHasColorTexture,
+	bool bUseLODRendering)
 {
 	SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatCalcViewData);
 
@@ -139,6 +158,7 @@ void FGaussianSplatRenderer::DispatchCalcViewData(
 		Parameters.ClusterVisibilityBitmap = GPUResources->ClusterVisibilityBitmapSRV;
 		Parameters.SelectedClusterBuffer = GPUResources->SelectedClusterBufferSRV;
 		Parameters.UseClusterCulling = 1;
+		Parameters.UseLODRendering = bUseLODRendering ? 1 : 0;
 	}
 	else
 	{
@@ -147,6 +167,7 @@ void FGaussianSplatRenderer::DispatchCalcViewData(
 		Parameters.ClusterVisibilityBitmap = nullptr;
 		Parameters.SelectedClusterBuffer = nullptr;
 		Parameters.UseClusterCulling = 0;
+		Parameters.UseLODRendering = 0;
 	}
 
 	// Matrices
@@ -528,6 +549,261 @@ void FGaussianSplatRenderer::DispatchCalcLODViewData(
 	UnsetShaderUAVs(RHICmdList, ComputeShader, ComputeShader.GetComputeShader());
 }
 
+void FGaussianSplatRenderer::DispatchLODSplatRendering(
+	FRHICommandListImmediate& RHICmdList,
+	const FSceneView& View,
+	FGaussianSplatGPUResources* GPUResources,
+	const FMatrix& LocalToWorld,
+	float OpacityScale,
+	float SplatScale)
+{
+	SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatLODRendering);
+
+	if (!GPUResources->bHasLODSplats || GPUResources->LODSplatCount == 0)
+	{
+		return;
+	}
+
+	// GPU readback of LODClusterCountBuffer to get the number of unique LOD clusters
+	// This is a simple approach (Option A from the plan) - CPU reads count, loops through clusters
+	uint32 LODClusterCount = 0;
+
+	// Create staging buffer for readback
+	FRHIGPUBufferReadback* Readback = new FRHIGPUBufferReadback(TEXT("LODClusterCountReadback"));
+	Readback->EnqueueCopy(RHICmdList, GPUResources->LODClusterCountBuffer, sizeof(uint32));
+
+	// Flush and wait for readback (sync point - could be optimized with async readback)
+	RHICmdList.BlockUntilGPUIdle();
+
+	if (Readback->IsReady())
+	{
+		const uint32* Data = static_cast<const uint32*>(Readback->Lock(sizeof(uint32)));
+		if (Data)
+		{
+			LODClusterCount = *Data;
+		}
+		Readback->Unlock();
+	}
+
+	delete Readback;
+
+	if (LODClusterCount == 0)
+	{
+		return;
+	}
+
+	// Read back the LOD cluster indices
+	TArray<uint32> LODClusterIndices;
+	LODClusterIndices.SetNum(LODClusterCount);
+
+	FRHIGPUBufferReadback* ClusterReadback = new FRHIGPUBufferReadback(TEXT("LODClusterBufferReadback"));
+
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->LODClusterBuffer, ERHIAccess::SRVCompute, ERHIAccess::CopySrc));
+	ClusterReadback->EnqueueCopy(RHICmdList, GPUResources->LODClusterBuffer, LODClusterCount * sizeof(uint32));
+	RHICmdList.BlockUntilGPUIdle();
+
+	if (ClusterReadback->IsReady())
+	{
+		const uint32* Data = static_cast<const uint32*>(ClusterReadback->Lock(LODClusterCount * sizeof(uint32)));
+		if (Data)
+		{
+			FMemory::Memcpy(LODClusterIndices.GetData(), Data, LODClusterCount * sizeof(uint32));
+		}
+		ClusterReadback->Unlock();
+	}
+
+	delete ClusterReadback;
+
+	// Transition LODClusterBuffer back to SRV
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->LODClusterBuffer, ERHIAccess::CopySrc, ERHIAccess::SRVCompute));
+
+	// We also need the cluster data to get LODSplatStartIndex and LODSplatCount for each cluster
+	// Read back the cluster data (this is not ideal, but necessary for the simple approach)
+	TArray<FGaussianGPUCluster> ClusterData;
+	ClusterData.SetNum(GPUResources->ClusterCount);
+
+	FRHIGPUBufferReadback* ClusterDataReadback = new FRHIGPUBufferReadback(TEXT("ClusterDataReadback"));
+
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->ClusterBuffer, ERHIAccess::SRVMask, ERHIAccess::CopySrc));
+	ClusterDataReadback->EnqueueCopy(RHICmdList, GPUResources->ClusterBuffer, GPUResources->ClusterCount * sizeof(FGaussianGPUCluster));
+	RHICmdList.BlockUntilGPUIdle();
+
+	if (ClusterDataReadback->IsReady())
+	{
+		const FGaussianGPUCluster* Data = static_cast<const FGaussianGPUCluster*>(ClusterDataReadback->Lock(GPUResources->ClusterCount * sizeof(FGaussianGPUCluster)));
+		if (Data)
+		{
+			FMemory::Memcpy(ClusterData.GetData(), Data, GPUResources->ClusterCount * sizeof(FGaussianGPUCluster));
+		}
+		ClusterDataReadback->Unlock();
+	}
+
+	delete ClusterDataReadback;
+
+	// Transition ClusterBuffer back to SRV
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->ClusterBuffer, ERHIAccess::CopySrc, ERHIAccess::SRVMask));
+
+	// Transition ViewDataBuffer back to UAV for LOD splat output
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->ViewDataBuffer, ERHIAccess::SRVCompute, ERHIAccess::UAVCompute));
+
+	// Process each LOD cluster
+	// LOD splats are written AFTER original splats in ViewDataBuffer
+	// Since covered original splats are marked invalid, their slots are reused for sorting
+	// OutputStartIndex starts after SplatCount
+	uint32 OutputIndex = 0;  // For now, we'll write LOD data starting from index 0
+	                         // The invalid original splats will sort to the end anyway
+
+	// Note: In a more optimized version, we'd track which ViewDataBuffer slots are available
+	// For now, LOD splats overwrite from the beginning - this works because:
+	// 1. Covered original splats are already marked invalid
+	// 2. LOD splats replace them in the rendering order
+	// 3. Sort will handle proper depth ordering
+
+	for (uint32 i = 0; i < LODClusterCount; ++i)
+	{
+		uint32 ClusterIndex = LODClusterIndices[i];
+		if (ClusterIndex >= static_cast<uint32>(GPUResources->ClusterCount))
+		{
+			continue;
+		}
+
+		const FGaussianGPUCluster& Cluster = ClusterData[ClusterIndex];
+		if (Cluster.LODSplatCount == 0)
+		{
+			continue;
+		}
+
+		// Dispatch LOD view data calculation for this cluster's LOD splats
+		DispatchCalcLODViewData(
+			RHICmdList,
+			View,
+			GPUResources,
+			LocalToWorld,
+			Cluster.LODSplatStartIndex,
+			Cluster.LODSplatCount,
+			OutputIndex,
+			OpacityScale,
+			SplatScale
+		);
+
+		OutputIndex += Cluster.LODSplatCount;
+	}
+
+	// Transition ViewDataBuffer back to SRV for CalcDistances
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->ViewDataBuffer, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
+
+	// Log LOD rendering statistics
+	// UE_LOG(LogTemp, Log, TEXT("LOD Rendering: %d clusters, %d total LOD splats"), LODClusterCount, OutputIndex);
+}
+
+void FGaussianSplatRenderer::DispatchCalcLODViewDataGPUDriven(
+	FRHICommandListImmediate& RHICmdList,
+	const FSceneView& View,
+	FGaussianSplatGPUResources* GPUResources,
+	const FMatrix& LocalToWorld,
+	float OpacityScale,
+	float SplatScale)
+{
+	SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatCalcLODViewDataGPUDriven);
+
+	if (!GPUResources->bHasLODSplats || GPUResources->LODSplatCount == 0)
+	{
+		return;
+	}
+
+	if (!GPUResources->LODSplatClusterIndexBufferSRV.IsValid())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("LODSplatClusterIndexBuffer not available for GPU-driven LOD rendering"));
+		return;
+	}
+
+	TShaderMapRef<FGaussianSplatCalcLODViewDataGPUDrivenCS> ComputeShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+
+	if (!ComputeShader.IsValid())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FGaussianSplatCalcLODViewDataGPUDrivenCS shader not valid"));
+		return;
+	}
+
+	// Transition buffers for compute
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->ViewDataBuffer, ERHIAccess::SRVCompute, ERHIAccess::UAVCompute));
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->LODSplatOutputCountBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+
+	// LODClusterSelectedBitmap should already be in SRVCompute from cluster culling
+	// (it was transitioned but we need to ensure it's readable)
+
+	FGaussianSplatCalcLODViewDataGPUDrivenCS::FParameters Parameters;
+	Parameters.LODSplatBuffer = GPUResources->LODSplatBufferSRV;
+	Parameters.LODSplatClusterIndexBuffer = GPUResources->LODSplatClusterIndexBufferSRV;
+	Parameters.LODClusterSelectedBitmap = GPUResources->LODClusterSelectedBitmapSRV;
+	Parameters.ViewDataBuffer = GPUResources->ViewDataBufferUAV;
+	Parameters.LODSplatOutputCountBuffer = GPUResources->LODSplatOutputCountBufferUAV;
+
+	// Matrices
+	Parameters.LocalToWorld = FMatrix44f(LocalToWorld);
+	Parameters.WorldToClip = FMatrix44f(View.ViewMatrices.GetViewProjectionMatrix());
+	Parameters.WorldToView = FMatrix44f(View.ViewMatrices.GetViewMatrix());
+
+	// Screen info
+	FIntRect ViewRect = View.UnscaledViewRect;
+	Parameters.ScreenSize = FVector2f(ViewRect.Width(), ViewRect.Height());
+
+	// Focal length from projection matrix
+	const FMatrix& ProjMatrix = View.ViewMatrices.GetProjectionMatrix();
+	Parameters.FocalLength = FVector2f(
+		ProjMatrix.M[0][0] * ViewRect.Width() * 0.5f,
+		ProjMatrix.M[1][1] * ViewRect.Height() * 0.5f
+	);
+
+	Parameters.TotalLODSplats = GPUResources->LODSplatCount;
+	Parameters.OutputStartIndex = GPUResources->GetSplatCount();  // Write after original splats
+	Parameters.SplatScale = SplatScale;
+	Parameters.OpacityScale = OpacityScale;
+
+	// Dispatch compute shader
+	const uint32 ThreadGroupSize = 256;
+	const uint32 NumGroups = FMath::DivideAndRoundUp((uint32)GPUResources->LODSplatCount, ThreadGroupSize);
+
+	SetComputePipelineState(RHICmdList, ComputeShader.GetComputeShader());
+	SetShaderParameters(RHICmdList, ComputeShader, ComputeShader.GetComputeShader(), Parameters);
+	RHICmdList.DispatchComputeShader(NumGroups, 1, 1);
+	UnsetShaderUAVs(RHICmdList, ComputeShader, ComputeShader.GetComputeShader());
+
+	// Transition buffers for next stage
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->ViewDataBuffer, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->LODSplatOutputCountBuffer, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
+}
+
+void FGaussianSplatRenderer::DispatchUpdateDrawArgs(
+	FRHICommandListImmediate& RHICmdList,
+	FGaussianSplatGPUResources* GPUResources)
+{
+	SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatUpdateDrawArgs);
+
+	TShaderMapRef<FUpdateDrawArgsCS> ComputeShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+
+	if (!ComputeShader.IsValid())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("FUpdateDrawArgsCS shader not valid"));
+		return;
+	}
+
+	// Transition IndirectDrawArgsBuffer back to UAV for update
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->IndirectDrawArgsBuffer, ERHIAccess::IndirectArgs, ERHIAccess::UAVCompute));
+
+	FUpdateDrawArgsCS::FParameters Parameters;
+	Parameters.IndirectDrawArgsBuffer = GPUResources->IndirectDrawArgsBufferUAV;
+	Parameters.LODSplatOutputCountBuffer = GPUResources->LODSplatOutputCountBufferSRV;
+
+	SetComputePipelineState(RHICmdList, ComputeShader.GetComputeShader());
+	SetShaderParameters(RHICmdList, ComputeShader, ComputeShader.GetComputeShader(), Parameters);
+	RHICmdList.DispatchComputeShader(1, 1, 1);
+	UnsetShaderUAVs(RHICmdList, ComputeShader, ComputeShader.GetComputeShader());
+
+	// Transition back to IndirectArgs for draw call
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->IndirectDrawArgsBuffer, ERHIAccess::UAVCompute, ERHIAccess::IndirectArgs));
+}
+
 void FGaussianSplatRenderer::ExtractFrustumPlanes(const FMatrix& ViewProjection, FVector4f OutPlanes[6])
 {
 	// Extract frustum planes from view-projection matrix
@@ -604,7 +880,8 @@ int32 FGaussianSplatRenderer::DispatchClusterCulling(
 	FRHICommandListImmediate& RHICmdList,
 	const FSceneView& View,
 	FGaussianSplatGPUResources* GPUResources,
-	const FMatrix& LocalToWorld)
+	const FMatrix& LocalToWorld,
+	bool bUseLODRendering)
 {
 	SCOPED_DRAW_EVENT(RHICmdList, GaussianSplatClusterCulling);
 
@@ -636,13 +913,25 @@ int32 FGaussianSplatRenderer::DispatchClusterCulling(
 		RHICmdList.Transition(FRHITransitionInfo(GPUResources->IndirectDrawArgsBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
 	}
 
-	// Step 1: Reset the visible cluster counter, indirect draw args, visibility bitmap, and selected cluster buffer
+	// Transition LOD cluster tracking buffers (always needed for reset)
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->LODClusterBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->LODClusterCountBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->LODClusterSelectedBitmap, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->LODSplatTotalBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->LODSplatOutputCountBuffer, ERHIAccess::Unknown, ERHIAccess::UAVCompute));
+
+	// Step 1: Reset the visible cluster counter, indirect draw args, visibility bitmap, selected cluster buffer, and LOD tracking buffers
 	{
 		FClusterCullingResetCS::FParameters ResetParams;
 		ResetParams.VisibleClusterCountBuffer = GPUResources->VisibleClusterCountBufferUAV;
 		ResetParams.IndirectDrawArgsBuffer = GPUResources->IndirectDrawArgsBufferUAV;
 		ResetParams.ClusterVisibilityBitmap = GPUResources->ClusterVisibilityBitmapUAV;
 		ResetParams.SelectedClusterBuffer = GPUResources->SelectedClusterBufferUAV;
+		ResetParams.LODClusterBuffer = GPUResources->LODClusterBufferUAV;
+		ResetParams.LODClusterCountBuffer = GPUResources->LODClusterCountBufferUAV;
+		ResetParams.LODClusterSelectedBitmap = GPUResources->LODClusterSelectedBitmapUAV;
+		ResetParams.LODSplatTotalBuffer = GPUResources->LODSplatTotalBufferUAV;
+		ResetParams.LODSplatOutputCountBuffer = GPUResources->LODSplatOutputCountBufferUAV;
 		ResetParams.ClusterVisibilityBitmapSize = VisibilityBitmapSize;
 		ResetParams.LeafClusterCount = GPUResources->LeafClusterCount;
 
@@ -659,13 +948,16 @@ int32 FGaussianSplatRenderer::DispatchClusterCulling(
 	RHICmdList.Transition(FRHITransitionInfo(GPUResources->VisibleClusterCountBuffer, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
 	RHICmdList.Transition(FRHITransitionInfo(GPUResources->ClusterVisibilityBitmap, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
 	RHICmdList.Transition(FRHITransitionInfo(GPUResources->SelectedClusterBuffer, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->LODClusterCountBuffer, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->LODClusterSelectedBitmap, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
+	RHICmdList.Transition(FRHITransitionInfo(GPUResources->LODSplatTotalBuffer, ERHIAccess::UAVCompute, ERHIAccess::UAVCompute));
 
 	// Step 2: Run cluster culling with LOD selection
 	{
-		// Extract frustum planes from combined local-to-clip matrix
-		FMatrix LocalToClip = LocalToWorld * View.ViewMatrices.GetViewProjectionMatrix();
+		// Extract frustum planes from world-space ViewProjection matrix
+		// The shader transforms cluster bounds to world space, so frustum planes must also be in world space
 		FVector4f FrustumPlanes[6];
-		ExtractFrustumPlanes(LocalToClip, FrustumPlanes);
+		ExtractFrustumPlanes(View.ViewMatrices.GetViewProjectionMatrix(), FrustumPlanes);
 
 		FClusterCullingCS::FParameters CullingParams;
 		CullingParams.ClusterBuffer = GPUResources->ClusterBufferSRV;
@@ -674,6 +966,10 @@ int32 FGaussianSplatRenderer::DispatchClusterCulling(
 		CullingParams.IndirectDrawArgsBuffer = GPUResources->IndirectDrawArgsBufferUAV;
 		CullingParams.ClusterVisibilityBitmap = GPUResources->ClusterVisibilityBitmapUAV;
 		CullingParams.SelectedClusterBuffer = GPUResources->SelectedClusterBufferUAV;
+		CullingParams.LODClusterBuffer = GPUResources->LODClusterBufferUAV;
+		CullingParams.LODClusterCountBuffer = GPUResources->LODClusterCountBufferUAV;
+		CullingParams.LODClusterSelectedBitmap = GPUResources->LODClusterSelectedBitmapUAV;
+		CullingParams.LODSplatTotalBuffer = GPUResources->LODSplatTotalBufferUAV;
 		CullingParams.LocalToWorld = FMatrix44f(LocalToWorld);
 		CullingParams.WorldToClip = FMatrix44f(View.ViewMatrices.GetViewProjectionMatrix());
 		CullingParams.ClusterCount = GPUResources->ClusterCount;
@@ -688,8 +984,9 @@ int32 FGaussianSplatRenderer::DispatchClusterCulling(
 		CullingParams.CameraPosition = FVector3f(View.ViewMatrices.GetViewOrigin());
 		FIntRect ViewRect = View.UnscaledViewRect;
 		CullingParams.ScreenHeight = static_cast<float>(ViewRect.Height());
-		CullingParams.ErrorThreshold = 100.0f;  // Test: increased from 1.0f to debug LOD visualization
+		CullingParams.ErrorThreshold = 1.0f;  // 1 pixel error threshold for LOD selection
 		CullingParams.LODBias = 0.0f;         // No bias (can be made configurable)
+		CullingParams.UseLODRendering = bUseLODRendering ? 1 : 0;
 
 		const uint32 ThreadGroupSize = 64;
 		const uint32 NumGroups = FMath::DivideAndRoundUp((uint32)GPUResources->LeafClusterCount, ThreadGroupSize);
@@ -707,6 +1004,16 @@ int32 FGaussianSplatRenderer::DispatchClusterCulling(
 	// Transition visibility bitmap and selected cluster buffer for CalcViewData to read
 	RHICmdList.Transition(FRHITransitionInfo(GPUResources->ClusterVisibilityBitmap, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
 	RHICmdList.Transition(FRHITransitionInfo(GPUResources->SelectedClusterBuffer, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
+
+	// Transition LOD cluster buffers for LOD rendering pass
+	if (bUseLODRendering)
+	{
+		RHICmdList.Transition(FRHITransitionInfo(GPUResources->LODClusterBuffer, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
+		RHICmdList.Transition(FRHITransitionInfo(GPUResources->LODClusterCountBuffer, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
+		RHICmdList.Transition(FRHITransitionInfo(GPUResources->LODSplatTotalBuffer, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
+		// Transition LODClusterSelectedBitmap to SRV for GPU-driven LOD shader to read
+		RHICmdList.Transition(FRHITransitionInfo(GPUResources->LODClusterSelectedBitmap, ERHIAccess::UAVCompute, ERHIAccess::SRVCompute));
+	}
 
 	// Transition indirect draw args buffer for draw call
 	if (GPUResources->bSupportsIndirectDraw)
